@@ -90,4 +90,6 @@ def set_usb_state(device_state, devices: list[dict]) -> None:
     if is_chestnut_usb_id(entry.vendorId, entry.productId):
       chestnut_present = True
 
-  device_state.chestnutPresent = chestnut_present
+  # the comma 3 (tici) never uses chestnut, see selfdrive/modeld/helpers.py
+  from openpilot.common.hardware import HARDWARE
+  device_state.chestnutPresent = chestnut_present and HARDWARE.get_device_type() != "tici"

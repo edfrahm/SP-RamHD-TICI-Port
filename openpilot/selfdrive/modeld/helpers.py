@@ -4,6 +4,7 @@ import struct
 from pathlib import Path
 
 from openpilot.common.file_chunker import get_manifest_path
+from openpilot.common.hardware import HARDWARE
 from openpilot.common.hardware.usb import CHESTNUT_USB_PRODUCT, USB_DEVICES_PATH, is_chestnut_usb_id
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
@@ -24,6 +25,9 @@ def load_oob(f):
   return pickle.load(io.BytesIO(opcodes), buffers=buffers())
 
 def chestnut_present() -> bool:
+  # the comma 3 (tici) never uses chestnut: no big model catalog, no big model compile
+  if HARDWARE.get_device_type() == "tici":
+    return False
   for d in USB_DEVICES_PATH.glob("*"):
     try:
       usb_id = (int((d / "idVendor").read_text(), 16), int((d / "idProduct").read_text(), 16))
