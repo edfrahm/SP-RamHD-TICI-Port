@@ -61,6 +61,15 @@ def flash_panda(panda_serial: str):
   panda.close()
 
 
+def wait_for_usb_panda() -> None:
+  # The comma 3's internal panda is on USB, which needs time to (re-)enumerate after a reset,
+  # and USB takes up to a minute to come up after boot. SPI pandas are there right away.
+  time.sleep(1.)  # let the old enumeration drop off after the reset
+  deadline = max(time.monotonic() + 5., 60.)
+  while time.monotonic() < deadline and not (Panda.list(usb_only=True) or PandaDFU.usb_list()):
+    time.sleep(0.1)
+
+
 def check_panda_support(panda_serials: list[str]) -> list[str]:
   spi_serials = set(Panda.spi_list())
   for serial in panda_serials:
@@ -110,6 +119,9 @@ def main() -> None:
       else:
         HARDWARE.recover_internal_panda()
       count += 1
+
+      if HARDWARE.get_device_type() == "tici":
+        wait_for_usb_panda()
 
       # Flash all Pandas in DFU mode
       for serial in PandaDFU.list():

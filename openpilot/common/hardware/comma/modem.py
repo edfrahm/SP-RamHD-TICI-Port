@@ -67,6 +67,15 @@ INITIAL_STATE: dict[str, object] = {
 }
 
 
+def _sim_hot_swap_routed() -> bool:
+  # the comma 3 (tici) doesn't route the SIM detect pin
+  try:
+    with open("/sys/firmware/devicetree/base/model") as f:
+      return f.read().strip('\x00').split('comma ')[-1] != "tici"
+  except OSError:
+    return True
+
+
 @contextmanager
 def _serial_port(port: str, baudrate: int):
   fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
@@ -304,15 +313,17 @@ class Modem:
       # clear initial EPS bearer APN (some carriers reject the default)
       'AT+CGDCONT=0,"IP",""',
 
-      # SIM hot swap
-      'AT+QSIMDET=1,0',
-      'AT+QSIMSTAT=1',
-
       # configure modem as data-centric
       'AT+QNVW=5280,0,"0102000000000000"',
       'AT+QNVFW="/nv/item_files/ims/IMS_enable",00',
       'AT+QNVFW="/nv/item_files/modem/mmode/ue_usage_setting",01',
     ]
+    if _sim_hot_swap_routed():
+      cmds += [
+        # SIM hot swap
+        'AT+QSIMDET=1,0',
+        'AT+QSIMSTAT=1',
+      ]
     for c in cmds:
       self._at(c)
 

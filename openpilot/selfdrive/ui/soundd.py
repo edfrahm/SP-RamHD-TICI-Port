@@ -28,7 +28,7 @@ AMBIENT_DB = 26 # DB where MIN_VOLUME is applied
 DB_SCALE = 30 # AMBIENT_DB + DB_SCALE is where MAX_VOLUME is applied
 
 VOLUME_BASE = 20
-if HARDWARE.get_device_type() == "tizi":
+if HARDWARE.get_device_type() in ("tizi", "tici"):
   AMBIENT_DB = 30
   VOLUME_BASE = 10
 
