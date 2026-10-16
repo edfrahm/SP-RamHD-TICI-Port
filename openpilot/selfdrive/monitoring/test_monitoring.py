@@ -251,6 +251,28 @@ def _build_sm(selfdrive_enabled, lat_active, steering_pressed, gas_pressed):
   }
 
 
+class TestPoseCalibrationRange(OpenpilotTestCase):
+  # Ram 2500 with a comma 3: the device sits high in a tall windshield, far to the driver's right. Watching the road,
+  # the driver's head measured 0.19-0.26 rad below and 0.22-0.25 rad beside the camera axis over three drives.
+  NATURAL_PITCH, NATURAL_YAW = -0.25, 0.24
+
+  def _look(self, DM, pitch, yaw, seconds=DT_DMON):
+    msg = make_msg(True)
+    msg.leftDriverData.faceOrientation = [pitch, -yaw, 0.]  # centred face, no mount calibration: yaw = -model yaw
+    for _ in range(max(1, int(seconds / DT_DMON))):
+      DM._update_states(msg, [0, 0, 0], 25, False, False)
+    return DM.distracted_types['pose']
+
+  def test_tall_cab_driver(self):
+    DM = DriverMonitoring()
+    self._look(DM, self.NATURAL_PITCH, self.NATURAL_YAW, seconds=90)
+    assert DM.pose.calibrated
+    assert not self._look(DM, self.NATURAL_PITCH, self.NATURAL_YAW), "watching the road is not distraction"
+    assert not self._look(DM, self.NATURAL_PITCH - 0.17, self.NATURAL_YAW), "a 10 degree glance down is not distraction"
+    assert self._look(DM, self.NATURAL_PITCH - 0.35, self.NATURAL_YAW), "looking 20 degrees down still is"
+    assert self._look(DM, self.NATURAL_PITCH, self.NATURAL_YAW + 0.45), "looking 26 degrees aside still is"
+
+
 class TestRunStepEngagement(OpenpilotTestCase):
   @parameterized.expand([
     (False, False, False, False, False, False),  # disabled
