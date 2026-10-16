@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <string>
@@ -29,6 +30,10 @@ public:
     assert(it != device_map.end());
     return it->second;
   }
+
+  // SoM input voltage and current (INA231)
+  static int get_voltage() { return std::atoi(util::read_file("/sys/class/hwmon/hwmon1/in1_input").c_str()); }
+  static int get_current() { return std::atoi(util::read_file("/sys/class/hwmon/hwmon1/curr1_input").c_str()); }
 
   static std::string get_serial() {
     static std::string serial("");

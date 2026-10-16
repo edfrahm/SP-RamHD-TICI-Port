@@ -1,6 +1,7 @@
 #include "selfdrive/pandad/pandad.h"
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cassert>
 #include <cerrno>
@@ -22,6 +23,20 @@
 #define SATURATE_IL 1000
 
 ExitHandler do_exit;
+
+// The comma 3's panda (dos) doesn't measure the car's voltage reliably, so on tici the
+// voltage and current come from the SoM's INA231 instead, as before commaai/openpilot#38201.
+struct HwmonState {
+  std::atomic<uint32_t> voltage{0};
+  std::atomic<uint32_t> current{0};
+  std::atomic<bool> initialized{false};
+};
+
+HwmonState hwmon_state;
+
+bool use_hwmon() {
+  return Hardware::get_device_type() == cereal::InitData::DeviceType::TICI;
+}
 
 bool check_connected(Panda *panda) {
   if (!panda->connected()) {
@@ -114,6 +129,26 @@ void can_recv(Panda *panda, PubMaster *pm) {
       canData[i].setSrc(raw_can_data[i].src);
     }
     pm->send("can", msg);
+  }
+}
+
+void hwmon_thread() {
+  util::set_thread_name("pandad_hwmon");
+
+  while (!do_exit) {
+    double read_time = millis_since_boot();
+    uint32_t voltage = Hardware::get_voltage();
+    uint32_t current = Hardware::get_current();
+    read_time = millis_since_boot() - read_time;
+    if (read_time > 50) {
+      LOGW("reading hwmon took %lfms", read_time);
+    }
+
+    hwmon_state.voltage.store(voltage);
+    hwmon_state.current.store(current);
+    hwmon_state.initialized.store(true);
+
+    util::sleep_for(500);
   }
 }
 
@@ -249,6 +284,11 @@ std::optional<bool> send_panda_states(PubMaster *pm, Panda *panda, bool is_onroa
 }
 
 void send_peripheral_state(Panda *panda, PubMaster *pm) {
+  const bool hwmon = use_hwmon();
+  if (hwmon && !hwmon_state.initialized.load()) {
+    return;
+  }
+
   auto health_opt = panda->get_state();
   if (!health_opt) {
     return;
@@ -262,9 +302,14 @@ void send_peripheral_state(Panda *panda, PubMaster *pm) {
   auto ps = evt.initPeripheralState();
   ps.setPandaType(panda->hw_type);
 
-  health_t health = *health_opt;
-  ps.setVoltage(health.voltage_pkt);
-  ps.setCurrent(health.current_pkt);
+  if (hwmon) {
+    ps.setVoltage(hwmon_state.voltage.load());
+    ps.setCurrent(hwmon_state.current.load());
+  } else {
+    health_t health = *health_opt;
+    ps.setVoltage(health.voltage_pkt);
+    ps.setCurrent(health.current_pkt);
+  }
 
   uint16_t fan_speed_rpm = panda->get_fan_speed();
   ps.setFanSpeedRpm(fan_speed_rpm);
@@ -376,8 +421,12 @@ void pandad_run(Panda *panda) {
   const bool spoofing_started = getenv("STARTED") != nullptr;
   const bool fake_send = getenv("FAKESEND") != nullptr;
 
-  // Start helper thread for event-driven sendcan.
+  // Start helper threads for event-driven sendcan and slow non-Panda reads.
   std::thread send_thread(can_send_thread, panda, fake_send);
+  std::thread hardware_thread;
+  if (use_hwmon()) {
+    hardware_thread = std::thread(hwmon_thread);
+  }
 
   RateKeeper rk("pandad", 100);
   SubMaster sm({"selfdriveState", "deviceState", "selfdriveStateSP"});
@@ -437,6 +486,9 @@ void pandad_run(Panda *panda) {
   }
 
   send_thread.join();
+  if (hardware_thread.joinable()) {
+    hardware_thread.join();
+  }
 }
 
 void pandad_main_thread(std::string serial) {
