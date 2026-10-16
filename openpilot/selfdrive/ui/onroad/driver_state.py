@@ -3,6 +3,7 @@ import pyray as rl
 from openpilot.cereal import log
 from dataclasses import dataclass
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
+from openpilot.selfdrive.ui.onroad.driver_pose import pose_offsets, relative_face_orientation
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
@@ -63,6 +64,11 @@ class DriverStateRenderer(Widget):
     self.position_y: float = 0.0
     self.h_arc_data = None
     self.v_arc_data = None
+
+    # the driver's natural pose from an earlier drive, until this drive's calibration completes
+    saved = ui_state.params.get("DriverPoseOffsets")
+    self.saved_pose_offsets = (saved["pitch"], saved["yaw"]) if isinstance(saved, dict) else None
+    self.pose_offsets_save_frame = 0
 
     # Pre-allocate drawing arrays
     self.face_lines = [rl.Vector2(0, 0) for _ in range(len(DEFAULT_FACE_KPTS_3D))]
@@ -125,6 +131,15 @@ class DriverStateRenderer(Widget):
     driverstate = sm["driverStateV2"]
     driver_data = driverstate.rightDriverData if self.is_rhd else driverstate.leftDriverData
     driver_orient = driver_data.faceOrientation
+
+    # Draw the head relative to the driver's natural pose, not the camera
+    if len(driver_orient) == 3 and sm.recv_frame["driverMonitoringState"] > 0:
+      pose = dm_state.visionPolicyState.pose
+      driver_orient = relative_face_orientation(driver_orient, pose, self.is_rhd, pose_offsets(pose, self.saved_pose_offsets))
+      if pose.calibrated and sm.frame - self.pose_offsets_save_frame > 60 * 20:
+        self.pose_offsets_save_frame = sm.frame
+        self.saved_pose_offsets = (pose.pitchCalib.offset, pose.yawCalib.offset)
+        ui_state.params.put("DriverPoseOffsets", {"pitch": self.saved_pose_offsets[0], "yaw": self.saved_pose_offsets[1]})
 
     # Update pose values with scaling and smoothing
     driver_orient = np.array(driver_orient)
