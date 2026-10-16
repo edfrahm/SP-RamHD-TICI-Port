@@ -1,3 +1,36 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:6a7adb302d378dda7b1788a841b89e4f905c872550a70a76650dcde977b4ece0
-size 24709209
+#!/usr/bin/env bash
+# AGNOS updater UI, started by launch_chffrplus.sh while an AGNOS update is required.
+# AGNOS before 14 runs weston (e.g. 12.8 under sunnypilot 0.10.1, 10.1 under older comma 3
+# branches), which the current raylib updater can't draw on, so use the Qt updater there.
+# If the updater UI can't run on this AGNOS at all, flash without it instead of looping forever.
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+
+AGNOS_PY=$1
+MANIFEST=$2
+
+if [[ ! -f "$AGNOS_PY" || ! -f "$MANIFEST" ]]; then
+  echo "invalid args"
+  exit 1
+fi
+
+# the updater UIs only return if they couldn't run: on success they reboot,
+# on failure they wait on screen for the user to reboot
+FAILURES="${AGNOS_UPDATER_FAILURES:-/tmp/agnos_updater_failures}"
+failures=$(cat "$FAILURES" 2>/dev/null || echo 0)
+if [ "$failures" -ge 3 ]; then
+  echo "updater UI failed $failures times, flashing AGNOS without it"
+  if "$AGNOS_PY" --swap "$MANIFEST"; then
+    sudo reboot
+  else
+    sleep 10
+  fi
+  exit 1
+fi
+
+if systemctl is-active --quiet weston-ready; then
+  "$DIR/updater_weston" "$AGNOS_PY" "$MANIFEST"
+else
+  "$DIR/updater_magic" "$AGNOS_PY" "$MANIFEST"
+fi
+echo $((failures + 1)) > "$FAILURES"

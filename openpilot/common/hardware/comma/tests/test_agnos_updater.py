@@ -14,8 +14,9 @@ class TestAgnosUpdater(OpenpilotTestCase):
       m = json.load(f)
 
     for img in m:
-      r = requests.head(img['url'], timeout=10)
+      # follow redirects like agnos.py does (e.g. GitHub release downloads), and check for an xz stream
+      r = requests.get(img['url'], timeout=10, stream=True, headers={'Range': 'bytes=0-5'})
       r.raise_for_status()
-      assert r.headers['Content-Type'] == "application/x-xz"
+      assert r.raw.read(6) == b"\xfd7zXZ\x00"
       if not img['sparse']:
         assert img['hash'] == img['hash_raw']
