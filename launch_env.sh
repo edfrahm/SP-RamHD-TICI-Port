@@ -15,8 +15,10 @@ export VECLIB_MAXIMUM_THREADS=1
 # headroom for this until ui is moved to the CPU.
 export QCOM_PRIORITY=12
 
+# comma 3 (tici): StarPilot's AGNOS build with comma 3 support, mirrored to edfrahm/agnos-c3
+# (manifest: openpilot/common/hardware/comma/agnos.json)
 if [ -z "$AGNOS_VERSION" ]; then
-  export AGNOS_VERSION="19.7"
+  export AGNOS_VERSION="19.8.1"
 fi
 
 export STAGING_ROOT="/data/safe_staging"
