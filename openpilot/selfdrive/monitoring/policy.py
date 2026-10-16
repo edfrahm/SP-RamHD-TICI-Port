@@ -66,8 +66,10 @@ class DRIVER_MONITOR_SETTINGS:
     self._PITCH_NATURAL_VAR = 3*0.01
     self._YAW_NATURAL_VAR = 3*0.05
     self._PITCH_MAX_OFFSET = 0.124
-    self._PITCH_MIN_OFFSET = -0.0881
-    self._YAW_MAX_OFFSET = 0.289
+    # wide enough for a device high in a tall windshield, far from the driver (Ram 2500 with a comma 3 measured
+    # -0.19..-0.26 rad pitch and +0.22..+0.25 rad yaw watching the road)
+    self._PITCH_MIN_OFFSET = -0.30
+    self._YAW_MAX_OFFSET = 0.35
     self._YAW_MIN_OFFSET = -0.0246
 
     self._DCAM_UNCERTAIN_ALERT_THRESHOLD = 0.1
