@@ -3,6 +3,51 @@
 ## 🌞 What is sunnypilot?
 [sunnypilot](https://github.com/sunnyhaibin/sunnypilot) is a fork of comma.ai's openpilot, an open source driver assistance system. sunnypilot offers the user a unique driving experience for over 300+ supported car makes and models with modified behaviors of driving assist engagements. sunnypilot complies with comma.ai's safety rules as accurately as possible.
 
+## Ram port shared data upload: privacy
+
+This fork (sunnypilot on the comma 3 for Ram Heavy Duty trucks, [edfrahm/SP-RamHD-TICI-Port](https://github.com/edfrahm/SP-RamHD-TICI-Port))
+can share a small table of driving numbers with the project, to help make cruise control smoother on these trucks.
+It is off unless you switch on **SunnyPilot/Ram Port data Upload** (Settings, sunnylink page). That one toggle also
+controls sunnylink's own uploader. It runs only on Ram Heavy Duty trucks.
+
+**What is sent**, about 10 times per second while driving:
+- speed and acceleration, accelerator pedal position, engine speed and engine torque
+- transmission: current and requested gear, whether the torque converter (the fluid coupling between engine and gearbox)
+  is locked, whether a shift is under way, transmission input and output speed
+- brakes and towing: driver on the brake pedal, brakes applied, exhaust brake on, tow/haul mode on, trailer connected,
+  fuel level
+- the estimated road grade, combined weight and air drag, and how sure each estimate is
+- the factory cruise control: engaged or not, set speed, its engine torque and braking requests, the following-distance
+  setting
+- the camera's view of a car ahead: how sure it is that there is one, its distance, speed and acceleration
+
+Each file also states the truck platform name, the engine and transmission module part numbers, the software version,
+a random key made fresh for each drive (it links to nothing else), the part and row counts, and the date (no time of day).
+
+**Never sent:** video, audio, any location (no latitude, longitude, altitude, or Global Positioning System (GPS)
+speed or heading), the vehicle identification number (VIN), the route name, or the comma dongle ID.
+
+**Trimming:** the first 2 minutes and the last 2 minutes of every drive are never written to the device's storage, so
+the data does not show where a drive starts or ends.
+
+**Registration:** once, the device registers with its own device key, its hardware serial number and its
+cellular-modem ID (IMEI, International Mobile Equipment Identity). The service checks that they look genuine and keeps
+only keyed hashes of them (one-way fingerprints made with a secret key), never the numbers themselves. It answers with
+a random **RamPort ID**, shown on the Device settings page. Every upload is signed with the device key.
+
+**When:** only while the toggle is on, and only on an unmetered network (for example Wi-Fi, never a metered cellular
+data plan). While driving, files are sent only if the Device page's Onroad Uploads button is on; otherwise they wait
+until the truck is parked. Until then, files wait on the device (at most 500 MB; the oldest are deleted first).
+Switching the toggle off stops recording at once (the rest of a drive in progress is thrown away) and nothing more
+is sent.
+
+**Where it goes:** to the project's upload service, which stores the files in a private SharePoint site run by the
+project maintainer, Eric. The service accepts uploads only: it offers no way to read, list, change or delete data.
+
+**Deletion:** open an issue at [github.com/edfrahm/SP-RamHD-TICI-Port](https://github.com/edfrahm/SP-RamHD-TICI-Port/issues)
+with the RamPort ID shown on your Device page, and your data will be deleted.
+*(PLACEHOLDER: Eric to confirm this contact method or name another one.)*
+
 ## 💭 Join our Community Forum
 Join the official sunnypilot community forum to stay up to date with all the latest features and be a part of shaping the future of sunnypilot!
 * https://community.sunnypilot.ai/

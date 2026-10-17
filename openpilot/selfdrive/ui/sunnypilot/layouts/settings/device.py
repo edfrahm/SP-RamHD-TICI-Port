@@ -4,6 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import time
+
 from openpilot.selfdrive.ui.layouts.settings.device import DeviceLayout
 from openpilot.selfdrive.ui.onroad.cabin_camera_dialog import CabinCameraDialog
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -17,6 +19,8 @@ from openpilot.system.ui.widgets.button import ButtonStyle
 from openpilot.system.ui.widgets.confirm_dialog import alert_dialog, ConfirmDialog
 from openpilot.system.ui.widgets.list_view import text_item
 from openpilot.system.ui.widgets.scroller_tici import LineSeparator
+
+RAMPORT_ID_REFRESH_S = 1.0
 
 offroad_time_options = {
   0: 0,
@@ -36,6 +40,8 @@ offroad_time_options = {
 
 class DeviceLayoutSP(DeviceLayout):
   def __init__(self):
+    self._ramport_id = ""
+    self._ramport_id_read_time: float | None = None
     DeviceLayout.__init__(self)
     self._scroller._line_separator = None
 
@@ -113,6 +119,8 @@ class DeviceLayoutSP(DeviceLayout):
       LineSeparator(),
       text_item(lambda: tr("Serial"), self._params.get("HardwareSerial") or (lambda: tr("N/A"))),
       LineSeparator(),
+      text_item(lambda: tr("RamPort ID"), self._ramport_id_text),
+      LineSeparator(),
       self._pair_device_btn,
       LineSeparator(),
       self._reset_calib_btn,
@@ -135,6 +143,15 @@ class DeviceLayoutSP(DeviceLayout):
 
   def _offroad_transition(self):
     self._power_buttons.action_item.right_button.set_visible(ui_state.is_offroad())
+
+  def _ramport_id_text(self) -> str:
+    """The random ID the Ram port upload service gave this device (edfrahm/SP-RamHD-TICI-Port#9).
+    Read from the setting at most once per second, since the screen asks for it every frame."""
+    now = time.monotonic()
+    if self._ramport_id_read_time is None or now - self._ramport_id_read_time >= RAMPORT_ID_REFRESH_S:
+      self._ramport_id_read_time = now
+      self._ramport_id = self._params.get("RamPortDeviceId") or ""
+    return self._ramport_id or tr("not registered")
 
   @staticmethod
   def wake_mode_description() -> str:

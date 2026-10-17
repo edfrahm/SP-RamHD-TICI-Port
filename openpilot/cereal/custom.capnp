@@ -497,5 +497,85 @@ struct CustomReserved17 @0xa30662f84033036c {
 struct CustomReserved18 @0xc86a3d38d13eb3ef {
 }
 
-struct CustomReserved19 @0xa4f1eb3323f5f582 {
+# Ram Heavy Duty weight and road-grade estimate (edfrahm/SP-RamHD-TICI-Port#8). Published only: nothing
+# reads it to steer, accelerate or brake in this stage. Units are SI (kilograms, newtons, meters per second).
+struct RamWeightGrade @0xa4f1eb3323f5f582 {
+  # combined weight of truck, people, load and any trailer, and one standard deviation of that estimate
+  massKg @0 :Float32;
+  massStdKg @1 :Float32;
+  # air drag: drag force in newtons = this value times speed squared (speed in meters per second)
+  dragNPerMps2 @2 :Float32;
+  dragStdNPerMps2 @3 :Float32;
+  # road grade as rise over run (0.05 is a 5 percent climb), positive uphill
+  grade @4 :Float32;
+  gradeStd @5 :Float32;
+
+  # true when this moment met the clean-moment rules and was used to update the weight
+  cleanMoment @6 :Bool;
+  cleanSamples @7 :UInt32;
+  fuelBurnedKg @8 :Float32;
+  startMassKg @9 :Float32;
+  startSource @10 :StartSource;
+  # the known extra load entered for a validation drive (setting CruiseKnownExtraLb), for comparison only
+  knownExtraKg @11 :Float32;
+  # the identified truck configuration, in words
+  configuration @12 :Text;
+
+  # decoded truck signals; a signal not yet verified on this truck is absent from availableSignals
+  engineRpm @13 :Float32;
+  engineTorqueNm @14 :Float32;
+  gearActual @15 :Int8;
+  gearDesired @16 :Int8;
+  converterLocked @17 :Bool;
+  shiftPending @18 :Bool;
+  transInputRpm @19 :Float32;
+  transOutputRpm @20 :Float32;
+  serviceBrakeOn @21 :Bool;
+  exhaustBrakeOn @22 :Bool;
+  towHaulOn @23 :Bool;
+  trailerConnected @24 :Bool;
+  fuelLevelPct @25 :Float32;
+  availableSignals @26 :List(Text);
+
+  # estimator diagnostics (edfrahm/SP-RamHD-TICI-Port#8)
+  # one standard deviation of the starting weight startMassKg
+  startMassStdKg @27 :Float32;
+  # how converterLocked was decided: from the truck's own signal, or from the steady engine-to-wheel speed ratio
+  converterLockRule @28 :ConverterLockRule;
+  # which measurements the road grade came from
+  gradeSource @29 :GradeSource;
+  # weight updates (one per three-second window) accepted this drive, and rejected as outliers
+  massUpdates @30 :UInt32;
+  rejectedUpdates @31 :UInt32;
+  # stops this drive after which the weight may have changed (see the estimator's README)
+  qualifyingStops @32 :UInt32;
+  # correlation between the weight and air-drag estimates, -1 to 1 (near -1: only their combination is known)
+  massDragCorrelation @33 :Float32;
+  # why this moment was not used for the weight, in words (empty when cleanMoment is true)
+  notCleanReasons @34 :List(Text);
+  # learned offset of the stability-control sensor's acceleration reading, meters per second squared
+  stabilitySensorOffsetMps2 @35 :Float32;
+  # learned offset of the Comma's own accelerometer reading (forward axis of the truck), meters per second squared
+  commaAccelOffsetMps2 @36 :Float32;
+
+  enum StartSource {
+    setting @0;          # the device setting CruiseBaseWeightLb (Eric's truck: 8,400 lb)
+    table @1;            # published curb weight for the identified configuration, plus allowances
+    tableBedAverage @2;  # as above, averaged over both bed lengths because the bed could not be identified
+    fallback @3;         # configuration unknown: the platform's default weight, with a wide uncertainty
+  }
+
+  enum ConverterLockRule {
+    none @0;             # engine or wheel speed missing: no decision
+    signal @1;           # the transmission's own torque converter lock signal
+    ratioFallback @2;    # fallback: engine speed / wheel speed held within about 1 percent for 2 seconds
+  }
+
+  enum GradeSource {
+    none @0;             # no grade measurement yet
+    pitchOnly @1;        # the Comma's own pitch estimate only (wider uncertainty)
+    sensorAndPitch @2;   # stability-control sensor acceleration minus wheel-speed acceleration, blended with the Comma's pitch
+    sensorOnly @3;       # stability-control sensor only (the Comma's pitch is not calibrated yet)
+    commaAccelerometer @4;  # the Comma's own accelerometer minus wheel-speed acceleration (its pitch counts little)
+  }
 }
