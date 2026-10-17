@@ -39,22 +39,35 @@ Files:
 
 ## How the grade is estimated
 
-A two-state Kalman filter: the sine of the grade angle, and the offset of the stability-control sensor's acceleration
-reading. Two measurements:
+A Kalman filter with three states: the sine of the grade angle, the offset of the stability-control sensor's reading,
+and the offset of the Comma's accelerometer. Measurements, in order of preference:
 
-1. **Stability-control sensor** (message `ESP_4`, 0x14C, pending verification in #5): the sensor feels acceleration
-   plus gravity along the slope; wheel speed gives the acceleration alone. Their difference is g times the sine of the
-   grade (plus the sensor's mounting offset). Both are smoothed by the same filter so their timing matches.
-2. **The Comma's own pitch**: openpilot's location filter publishes the device's orientation (`deviceMotion`, called
-   `livePose` in older versions) and calibration publishes the device's mounting angles (`extrinsicsCalibration`, called
-   `liveCalibration` before). Turned into the truck's frame the same way controlsd does, this gives the truck's pitch.
+1. **Stability-control sensor** (`ESP_4` Acceleration, 0x14C, verified in #5): it feels acceleration plus gravity
+   along the slope; wheel speed gives the acceleration alone. Their difference is g times the sine of the grade (plus a
+   small offset; on Eric's drives its grade averaged -0.001 to -0.005, about zero). Both sides are smoothed by the same
+   filter so their timing matches.
+2. **The Comma's own accelerometer** (the `accelerometer` service, about 104 readings per second, averaged over each
+   tenth of a second and turned into the truck's frame with the Comma's mounting angles from `extrinsicsCalibration`):
+   the same principle. Compared with ESP_4 it reads 0.13-0.19 m/s² higher (mean 0.16: its bias and what the calibration
+   leaves of the mounting tilt) and tilts a further 0.0038 rad nose-up per m/s² of acceleration (the cab pitching on its
+   mounts); both are corrected (`COMMA_ACCEL_OFFSET_MPS2`, `COMMA_TILT_PER_ACCEL`). With ESP_4 present its offset is
+   learned against ESP_4.
+3. **The Comma's pitch** (`deviceMotion` orientation, called `livePose` in older versions, turned into the truck's
+   frame like controlsd does): used **only when no accelerometer is available**, and only when plausible (older
+   software logged pitches down to -61°). Then the grade's uncertainty is wide: never below 0.015, growing by 0.6 of
+   the grade read.
 
-With both, the Comma's pitch fixes the sensor's slow offset and the sensor follows quick changes. Today the sensor is
-not in the database, so the **Comma's pitch is used alone**, with a wider uncertainty: never below 0.015, and growing
-with the grade it reads (0.6 of it). See "Findings from the first real drives" for why.
+Why the pitch is a last resort: on Eric's nine drives ESP_4 and the Comma's accelerometer agreed with each other
+(correlation 0.88-0.95, slope 0.91-1.06), while the pitch agreed with neither (correlation 0.01-0.80). Its errors
+are as large as the real grade changes on mild highway grades, so any fit against it shrinks (regression dilution:
+the fitted effect is about var(true) / (var(true) + var(error)), which gave 0.17-0.33 on those drives; the pitch is not
+three times too steep: regressed on ESP_4, its slope is 0.93-1.04). See "Findings".
 
-The body pitches nose-up when the truck speeds up, which tilts both sensors; `BODY_PITCH_PER_ACCEL` (radians per
-m/s²) corrects for it. It is 0 until `calibrate.py` fits it.
+Even ESP_4's grade carries some noise (its 0.08 m/s² steps): the engine force followed about 0.83 of its grade, so the
+grade's published uncertainty includes 0.2 of the grade read (`ACCEL_GRADE_REL_ERROR`).
+
+The body pitches nose-up when the truck speeds up, which tilts all three; `BODY_PITCH_PER_ACCEL` (radians per m/s²)
+corrects for it. It is 0: the drives did not show a need for it with ESP_4.
 
 ## How the weight and air drag are estimated
 
@@ -66,16 +79,18 @@ minus the power spent spinning up the engine itself (measured from the engine sp
 
     force = (mass + rotating parts) × acceleration + mass × g × (sine(grade) + rolling resistance × cosine(grade)) + c × speed²
 
-A two-state Kalman filter fits mass and c together. Both sides are averaged over the same one-second window of clean
-samples (ten samples), so their timing matches exactly, and the acceleration over the window is the speed change
-divided by the window length. Windows do not overlap.
+A two-state Kalman filter fits mass and c together. Both sides are averaged over the same **three-second** window of
+clean samples, so their timing matches exactly, and the acceleration over the window is the speed change divided by
+the window length. Windows do not overlap. (One second was too short: the speed and ESP_4 readings are coarse steps,
+and their noise over one second diluted the fit, giving estimates 5-15 percent low with far too small uncertainties.)
 
-- **Uncertainty narrows only with varied driving.** Steady cruising on a level road only tells the filter
-  mass × g × rolling resistance + c × speed² (one combination): such windows are used only for that combination, and the
-  weight stays uncertain. Accelerations (and, with the stability sensor, grades) separate weight from drag, and different
-  speeds separate rolling resistance from drag. With the Comma's pitch alone, only accelerations count, because those
-  grades are too uncertain. (Without this rule, noise in the measured grade and acceleration would look like information
-  and pull the weight down: the "errors in the input variables" bias.)
+- **Only accelerations inform the weight.** A window counts for the weight when its acceleration stands clearly out of
+  the noise (three noise widths, including the grade's uncertainty). The grade stays in the equation as a correction
+  with its uncertainty. On Eric's drives the acceleration effect matched Eric's weight with the textbook efficiency
+  (8,080-8,230 lb at 0.85) while the grade effect read 17 percent low even with ESP_4 (dilution, above).
+- **Steady driving** only tells the filter mass × g × rolling resistance + c × speed² (one combination): such windows
+  are used only for that combination, and the weight stays uncertain. Different speeds separate rolling resistance from
+  drag.
 - **Outliers** are rejected by innovation gating (three standard deviations).
 - **Weight changes only while stopped**: no process noise on the mass while moving. The drag factor may drift slowly
   (wind, direction).
@@ -84,13 +99,13 @@ Starting values ("priors"), all at the top of `estimator.py`:
 
 | constant | value | why |
 |---|---|---|
-| `EFFICIENCY` | 0.85 | engine power reaching the tires with the converter locked: gearbox about 0.92-0.95, axles 0.95-0.97, minus fan, alternator, pumps |
-| `ROLLING_RESISTANCE` | 0.009 | light-truck tires (load range E) on asphalt: 0.008-0.012 |
-| `DRAG_PRIOR` | 0.90 ± 0.35 N/(m/s)² | 0.5 × 1.2 kg/m³ × 0.409 (Ram's published drag coefficient, 2019 Ram HD press kit) × 3.67 m² (an **unofficial** frontal area: 83.5 in wide × 80.2 in high × 0.85). Wide because the area is a guess; a trailer can add 1 to 3. |
+| `EFFICIENCY` | 0.85 | engine power reaching the tires with the converter locked: gearbox about 0.92-0.95, axles 0.95-0.97, minus fan, alternator, pumps. `calibrate.py` on Eric's drives at 8,180-8,400 lb: 0.850-0.872 (six older drives), 0.852 (three new drives) |
+| `ROLLING_RESISTANCE` | 0.009 | light-truck tires (load range E) on asphalt: 0.008-0.012. Fitted: 0.0081 (older drives), 0.0088 (new) |
+| `DRAG_PRIOR` | 0.90 ± 0.35 N/(m/s)² | 0.5 × 1.2 kg/m³ × 0.409 (Ram's published drag coefficient, 2019 Ram HD press kit) × 3.67 m² (an **unofficial** frontal area: 83.5 in wide × 80.2 in high × 0.85). Wide because the area is a guess; a trailer can add 1 to 3. Fitted on the drives: 0.74-0.78 |
 | `ENGINE_INERTIA_KGM2` | 1.5 | engine, flexplate and locked converter; matters in low gears |
 | `ROTATING_MASS_KG` | 120 | wheels, tires, rotors, shafts act like this much extra mass when speeding up |
 | `BODY_PITCH_PER_ACCEL` | 0 | fitted by `calibrate.py` |
-| `PITCH_GRADE_SCALE` | 1.0 | multiplies the Comma's pitch grade; see the findings below |
+| `COMMA_ACCEL_OFFSET_MPS2`, `COMMA_TILT_PER_ACCEL` | 0.16, 0.0038 | the Comma's accelerometer against ESP_4 on Eric's nine drives |
 
 ## Clean moments
 
@@ -106,15 +121,18 @@ Only clean moments are used for the weight (`clean_reasons` in `estimator.py`; t
   (`DAS_3 ENGINE_TORQUE_REQUEST`, bus 2);
 - no traction control, no sharp turn (sideways acceleration above 1.5 m/s² from the Comma's yaw rate), a known grade.
 
-Until the transmission signals are verified (#5):
+Transmission (`TCM_1`, 0x144, verified in #5):
 
-- **Converter-lock fallback (labeled, published in `converterLockRule`)**: the converter counts as locked when engine
-  speed divided by rear-wheel speed holds steady (every sample within 1 percent of the average) for 2 seconds. In a
-  fixed gear with the converter locked this ratio is the gear ratio times the axle ratio. A converter slipping by a
-  steady amount at light load can pass this test; the real signal will replace it. The fallback's result is published
-  in `converterLocked` but **not listed in `availableSignals`** (it is not a decoded signal).
-- **Shift in progress**: a shift changes the ratio, so the steady-ratio rule excludes it.
-- **Exhaust brake**: it works only with the accelerator released, so "engine pulling" already excludes it.
+- **Converter locked**: `TC_LOCKED` (engine speed equals the transmission's `INPUT_SPEED` when set).
+- **Shift in progress**: there is no shift-pending signal (never set in 549 shifts), so a shift is the desired gear
+  (`DESIRED_GEAR`) differing from the actual one (`ACTUAL_GEAR`), or the actual gear having changed within the last
+  second. Gear codes 1, 2, 9, 3, 4, 5 are 1st to 6th (published as 1-6); 0 and 11 (stopped, park, reverse) are
+  published as 0.
+- **Fallback (labeled, published in `converterLockRule`)** when `TCM_1` is not received: the converter counts as
+  locked when engine speed divided by rear-wheel speed holds steady (every sample within 1 percent of the average) for
+  2 seconds, which also excludes shifts. The fallback's result is published in `converterLocked` but **not listed in
+  `availableSignals`** (it is not a decoded signal).
+- **Exhaust brake** (not found yet): it works only with the accelerator released, so "engine pulling" excludes it.
 
 ## Stops, persistence and starting each drive
 
@@ -213,24 +231,28 @@ In **Settings > Vehicle** (the Chrysler/Ram panel), shown only on a Ram Heavy Du
 sunnylink's settings schema (`openpilot/sunnypilot/sunnylink/settings_ui.json`) does not need entries for these: its
 tests check only the settings it lists, and nothing requires every backed-up setting to be listed.
 
-## Signals: what is verified, what is pending (#5)
+## Signals: what is verified, what is not found yet (#5)
 
-All in `RAM_SIGNALS` in `ram_signals.py` (message, signal, bus, status). Known today: `ECM_1` ENGINE_RPM and
+All in `RAM_SIGNALS` in `ram_signals.py` (message, signal, bus, status). Verified or known: `ECM_1` ENGINE_RPM and
 ENGINE_TORQUE, `ESP_6` wheel speeds, `ESP_8` BRK_PRESSURE and Vehicle_Speed, `ESP_1` Brake_Pedal_State, `ECM_5`
-Accelerator_Position, `DAS_3` ACC_ACTIVE and ENGINE_TORQUE_REQUEST (bus 2); `ESP_2` TCS_ACTIVE is in the shared database
-but unchecked on this truck. Pending (named as realfast proposed): `TRANS_SPEED` (0x144) TC_LOCKED, ACTUAL_GEAR,
-DESIRED_GEAR, SHIFT_PENDING, INPUT_SPEED, OUTPUT_SPEED; `ESP_4` (0x14C) Acceleration. Not found yet: exhaust brake,
-tow/haul, trailer connected, fuel level, fuel tank size.
+Accelerator_Position, `DAS_3` ACC_ACTIVE and ENGINE_TORQUE_REQUEST (bus 2), `TCM_1` TC_LOCKED, ACTUAL_GEAR,
+DESIRED_GEAR, INPUT_SPEED, OUTPUT_SPEED, `ESP_4` Acceleration; `ESP_2` TCS_ACTIVE is in the shared database but
+unchecked on this truck. Not found yet (hooks, unavailable): exhaust brake, tow/haul, trailer connected, fuel level,
+fuel tank size. Seen but not verified, not used: fuel level 0x310 byte 1 (scale unsettled), range to empty 0x30E,
+fuel rate 0x2A0, odometer 0x310.
+
+ECM_1 ENGINE_TORQUE is the real engine torque, not an echo of the cruise request: it equals the factory cruise's
+request while the cruise holds speed (and differs from it 0.2-10 percent of the time), and the force fit is the same
+with the pedal as with the cruise (the acceleration effect gave 8,080 lb with the pedal, 8,230 lb with the cruise).
 
 A signal whose message is not in the database is unavailable and its `ramWeightGrade` field is left out of
-`availableSignals`. When #5 adds a verified signal to opendbc, fix its message and signal name in `RAM_SIGNALS` (and
-mark it known); nothing else changes. The tests include a copy of the database with the pending signals, so the code
-paths that use them are already exercised.
+`availableSignals`. When #5 verifies more signals, add them to opendbc, fix the message and signal names in
+`RAM_SIGNALS` and mark them known; nothing else changes.
 
 `availableSignals` lists `massKg`, `massStdKg`, `dragNPerMps2` once the filter runs, `grade` and `gradeStd` once it has
 a grade measurement, and each decoded truck signal (`engineRpm`, `engineTorqueNm`, `gearActual`, `gearDesired`,
-`converterLocked`, `shiftPending`, `transInputRpm`, `transOutputRpm`, `serviceBrakeOn`, `exhaustBrakeOn`, `towHaulOn`,
-`trailerConnected`, `fuelLevelPct`) only when it comes from a real signal.
+`converterLocked`, `shiftPending` (from the two gears), `transInputRpm`, `transOutputRpm`, `serviceBrakeOn`,
+`exhaustBrakeOn`, `towHaulOn`, `trailerConnected`, `fuelLevelPct`) only when it comes from a real signal.
 
 ## Replay a recorded drive
 
@@ -243,8 +265,7 @@ a grade measurement, and each decoded truck signal (`engineRpm`, `engineTorqueNm
 It runs exactly the on-device code over the drive and prints the estimate every minute, the qualifying stops, why
 moments were not clean, which grade source and converter rule were used, the estimate kept for the next drive and,
 with `--known-mass-lb`, the accuracy. Options: `--base-weight-lb` (as the setting), `--csv FILE` (10 Hz time series),
-`--dbc` (another message database), `--efficiency`, `--rolling-resistance`, `--body-pitch`, `--pitch-grade-scale` (try
-constants). The device settings are not read; the VIN is never printed.
+`--dbc` (another message database), `--efficiency`, `--rolling-resistance`, `--body-pitch` (try constants). The device settings are not read; the VIN is never printed.
 
 ## Calibrate the constants
 
@@ -254,28 +275,30 @@ drive), with varied speeds and grades, strong accelerations and long climbs:
     python openpilot/sunnypilot/selfdrive/ramweightd/calibrate.py <route> [<route> ...] --known-mass-lb 8400 [--root DIR]
 
 It fits efficiency, rolling resistance and the body pitch (which also absorbs rotating-mass errors), plus the air drag
-for information, and prints the values to put at the top of `estimator.py`. It warns when the drives do not separate
+for information, and prints the values to put at the top of `estimator.py`. On Eric's drives, fit with `--no-body-pitch`:
+with it, the body-pitch term trades against the grade's remaining noise and gives implausible values. It warns when the drives do not separate
 them or the values are not plausible. `--fit-grade-scale` instead checks the grade: how much of the measured grade the
 engine force follows (1.00 when the grade measurement is right). Check new constants with `replay.py` on other drives.
 
-## Findings from the first real drives (2026-10-16)
+## Findings from Eric's drives
 
-Three drives (00000776, 00000778, 00000779; 49 minutes), replayed read-only with only today's verified signals, so the
-Comma's pitch alone and the converter-lock fallback. **Eric's weight on those drives is not confirmed** (8,400 lb is
-likely: Eric alone with his standard gear). No GPS fix was recorded, so the grade could not be checked against
-altitude.
+Nine drives (291 minutes): 00000776, 00000778, 00000779 (this port, 2026-10-16) and 0000073e, 00000742, 00000748,
+0000074a, 0000076a, 0000076b (sunnypilot 0.10.1), replayed read-only. Eric: no drive weighed less than 8,400 lb minus
+the fuel not in the tank (a full 31-gallon tank is 219 lb), so every drive was at least about 8,180 lb; some may have
+been heavier.
 
-- The Comma's calibrated pitch (identical to what controlsd logs) disagrees with the grade implied by the engine force:
-  the force follows only about a third of the grade the pitch reads (`calibrate.py --fit-grade-scale`: 0.33). With
-  the unconfirmed 8,400 lb, everything else comes out at textbook values (efficiency 0.83, rolling resistance 0.009,
-  air drag 0.88). The ratio of the grade and acceleration effects (about 0.35-0.44 of the physical value) does not depend
-  on the weight or the efficiency. It is not a selection effect: it holds with the converter in any state, cruise on or
-  off. The cause is not known yet.
-- So without the stability sensor the grade's uncertainty is wide and grows with the grade, and only accelerations
-  inform the weight. With the shipped constants the kept estimates were 8,019 ± 1,588, 7,665 ± 1,460 and
-  6,148 ± 969 lb. With `--pitch-grade-scale 0.33` they were 8,093 ± 1,080, 8,079 ± 1,174 and 7,073 ± 676 lb.
-- To settle it: verify `ESP_4` (#5) so the stability sensor measures the grade; record a drive with a GPS fix on a road
-  with known grades; confirm the weight on a scale and run `calibrate.py`.
+- **The Comma's pitch is too noisy for the grade.** Against ESP_4 and the Comma's own accelerometer (which agree with
+  each other), it disagrees by about as much as the real grade varies on mild highway grades; fits against it shrink
+  to 0.17-0.33 (regression dilution, reproduced by the simulation in `tests/test_calibrate.py`). Longer averaging (5-30
+  seconds) does not help: its errors are slow. On three older drives the logged pitch was nonsense.
+- **ESP_4 and the Comma's accelerometer work**: the force followed 0.84-0.91 of their grade (the rest is their noise).
+- **Engine torque is real** (see "Signals"), and with the acceleration effect the textbook efficiency 0.85 matches Eric's
+  weight; `calibrate.py` fitted 0.850-0.872 on the older drives and 0.852 on the new ones (at 8,180-8,400 lb), rolling
+  resistance 0.008-0.009, drag 0.74-0.78. The constants were not changed.
+- Kept estimates now (ESP_4 grade, TC_LOCKED, three-second windows, weight from accelerations), against the 8,180 lb
+  lower bound: 0000073e 8,613 ± 509, 00000742 8,363 ± 537, 00000748 8,481 ± 484, 0000074a 8,431 ± 634, 0000076a
+  8,155 ± 255, 0000076b **7,354 ± 205** (10 percent low, not explained), 00000776 8,372 ± 516, 00000778 7,900 ± 722
+  (short drive), 00000779 8,226 ± 444 lb.
 
 ## Tests
 
