@@ -16,11 +16,11 @@ from opendbc.car.chrysler.values import DBC
 from openpilot.selfdrive.locationd.helpers import Pose, PoseCalibrator
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import Inputs, LB_TO_KG, Output, WeightGradeEstimator, valid_persisted_state
 from openpilot.sunnypilot.selfdrive.ramweightd.ram_signals import RamSignalReader
+from openpilot.sunnypilot.selfdrive.ramweightd.settings import RAM_HD_PLATFORM
 from openpilot.sunnypilot.selfdrive.ramweightd.start_weight import (UNKNOWN_FUEL_FRACTION, Configuration, StartWeight, WeightTable,
                                                                     choose_start_weight, identify_configuration, load_weight_table)
 
 RAM_HD_BRAND = "chrysler"
-RAM_HD_PLATFORM = "RAM_HD_5TH_GEN"
 STEP_HZ = 10.
 STEP_NANOS = int(1e9 / STEP_HZ)
 ESTIMATE_FIELDS = ["massKg", "massStdKg", "dragNPerMps2"]

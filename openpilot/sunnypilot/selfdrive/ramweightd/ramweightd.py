@@ -24,6 +24,7 @@ from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import lb
 from openpilot.sunnypilot.selfdrive.ramweightd.runner import STEP_HZ, WeightGradeRunner, is_ram_hd
+from openpilot.sunnypilot.selfdrive.ramweightd.settings import MAX_BASE_WEIGHT_LB
 
 SETTINGS_PERIOD_S = 5.
 SAVE_PERIOD_S = 60.
@@ -32,7 +33,7 @@ SAVE_PERIOD_S = 60.
 def read_settings(params: Params) -> tuple[float, float]:
   def number(key):
     try:
-      return max(float(params.get(key, return_default=True) or 0.), 0.)
+      return min(max(float(params.get(key, return_default=True) or 0.), 0.), MAX_BASE_WEIGHT_LB)
     except (TypeError, ValueError):
       return 0.
   return number("CruiseBaseWeightLb"), number("CruiseKnownExtraLb")
