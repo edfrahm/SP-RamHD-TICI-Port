@@ -12,6 +12,8 @@ Settings read (device settings, "params"):
 - CruiseBaseWeightLb: starting weight in pounds with a full tank; 0 uses the published-weight table
 - CruiseKnownExtraLb: the known added load on a validation drive; only published (knownExtraKg), never used by the
   estimator, so that accuracy = estimate - (starting weight + known extra) can be measured
+- CruiseEmptyWeightLb: the truck's empty (sticker) weight; the published weight never goes below it minus the fuel not
+  in the tank (massUnclampedKg keeps the estimate before that floor)
 - RamWeightGradeState: the estimate kept between drives; written at qualifying stops, every minute, and at the end
   of the drive
 """
@@ -30,13 +32,14 @@ SETTINGS_PERIOD_S = 5.
 SAVE_PERIOD_S = 60.
 
 
-def read_settings(params: Params) -> tuple[float, float]:
+def read_settings(params: Params) -> tuple[float, float, float]:
+  """(starting weight, known extra load, empty weight) in pounds; 0 when not set."""
   def number(key):
     try:
       return min(max(float(params.get(key, return_default=True) or 0.), 0.), MAX_BASE_WEIGHT_LB)
     except (TypeError, ValueError):
       return 0.
-  return number("CruiseBaseWeightLb"), number("CruiseKnownExtraLb")
+  return number("CruiseBaseWeightLb"), number("CruiseKnownExtraLb"), number("CruiseEmptyWeightLb")
 
 
 def save_state(params: Params, runner: WeightGradeRunner, block: bool = False) -> None:
@@ -55,11 +58,11 @@ def main() -> None:
     while True:
       time.sleep(60.)
 
-  base_lb, extra_lb = read_settings(params)
+  base_lb, extra_lb, empty_lb = read_settings(params)
   persisted = params.get("RamWeightGradeState")
-  runner = WeightGradeRunner(CP, base_weight_lb=base_lb, known_extra_lb=extra_lb, persisted=persisted)
+  runner = WeightGradeRunner(CP, base_weight_lb=base_lb, known_extra_lb=extra_lb, persisted=persisted, empty_weight_lb=empty_lb)
   cloudlog.info(f"ramweightd: configuration: {runner.configuration_text}; start {lb(runner.start.mass_kg):.0f} lb " +
-                f"({runner.start.source}: {runner.start.detail}); kept estimate used: {runner.persisted_used}; " +
+                f"({runner.start.source}: {runner.start.detail}); floor: {runner.floor.detail}; kept estimate used: {runner.persisted_used}; " +
                 f"signals not in the database: {', '.join(runner.reader.not_in_database)}")
 
   pm = messaging.PubMaster(["ramWeightGrade"])

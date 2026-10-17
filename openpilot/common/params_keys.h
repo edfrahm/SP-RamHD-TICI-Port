@@ -301,6 +301,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Ram Heavy Duty weight and grade estimator (edfrahm/SP-RamHD-TICI-Port#8)
     {"CruiseBaseWeightLb", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // starting weight in pounds; 0 uses the published-weight table
     {"CruiseKnownExtraLb", {PERSISTENT, FLOAT, "0.0"}},  // known added load for a validation drive, for comparison only
+    {"CruiseEmptyWeightLb", {PERSISTENT | BACKUP, FLOAT, "0.0"}},  // empty (sticker) weight in pounds, the estimate's floor; 0 uses the table
     {"RamWeightGradeState", {PERSISTENT, JSON}},  // the estimator's last estimate, kept between drives
 
     // Ram port shared data upload (edfrahm/SP-RamHD-TICI-Port#9)

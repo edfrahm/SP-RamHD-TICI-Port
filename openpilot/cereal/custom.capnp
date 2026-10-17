@@ -557,6 +557,12 @@ struct RamWeightGrade @0xa4f1eb3323f5f582 {
   stabilitySensorOffsetMps2 @35 :Float32;
   # learned offset of the Comma's own accelerometer reading (forward axis of the truck), meters per second squared
   commaAccelOffsetMps2 @36 :Float32;
+  # the weight floor: the empty (sticker) weight minus the fuel not in the tank (an empty tank when the level is not
+  # known); massKg never goes below it. 0 when there is no floor (configuration not identified and no setting).
+  massFloorKg @37 :Float32;
+  # the estimate before the floor, so an estimator error stays visible, and whether the floor applied
+  massUnclampedKg @38 :Float32;
+  atFloor @39 :Bool;
 
   enum StartSource {
     setting @0;          # the device setting CruiseBaseWeightLb (Eric's truck: 8,400 lb)

@@ -363,3 +363,41 @@ class TestGenerator(OpenpilotTestCase):
       expected = M.dumps(M.build(json.load(f)))
     with open(S.DEFAULT_TABLE_PATH) as f:
       assert f.read() == expected
+
+
+class TestWeightFloor(OpenpilotTestCase):
+  """The floor: empty weight minus the fuel not in the tank (the whole tank when the level is not known)."""
+
+  def setUp(self):
+    super().setUp()
+    self.t = S.load_weight_table()
+    self.eric = S.identify_configuration(car_params(fake_vin("3C6UR5GL")), self.t)  # FAKE VIN around Eric's model characters
+
+  def floor_lb(self, conf, empty_lb, level, tank=31., density=7.079, table=True):
+    f = S.weight_floor(conf, self.t if table else None, empty_lb, level, tank, density)
+    return None if f.mass_kg is None else f.mass_kg / LB_TO_KG, f.source
+
+  def test_setting_both_fuel_cases(self):
+    full_tank = 31. * 7.079  # 219 lb
+    assert abs(self.floor_lb(self.eric, 8040., 100.)[0] - 8040.) < 1e-6
+    lb_unknown, source = self.floor_lb(self.eric, 8040., None)
+    assert source == "setting" and abs(lb_unknown - (8040. - full_tank)) < 1e-6  # 7,821 lb: as if the tank were empty
+    assert abs(self.floor_lb(self.eric, 8040., 50.)[0] - (8040. - 0.5 * full_tank)) < 1e-6
+    # the setting works without any table or identified configuration
+    assert abs(self.floor_lb(S.Configuration(), 8040., 100., table=False)[0] - 8040.) < 1e-6
+
+  def test_table_without_options_allowance(self):
+    lb_full, source = self.floor_lb(self.eric, 0., 100.)
+    assert source == "table" and abs(lb_full - 7511.) < 1e-6  # Ram's published curb weight, standard box, no 529 lb
+    assert abs(self.floor_lb(self.eric, 0., None)[0] - (7511. - 31. * 7.079)) < 1e-6
+    # bed not identified: the lighter bed; 3500 Cummins output not identified: the lighter engine
+    no_bed = S.Configuration({k: v for k, v in self.eric.fields.items() if k != "bed"})
+    rows = [c for c in self.t.configs if all(c[k] == v for k, v in no_bed.fields.items()) and c["box_variant"] == "standard"]
+    assert abs(self.floor_lb(no_bed, 0., 100.)[0] - min(c["curb_weight_lb"] for c in rows)) < 1e-6
+    crew_long_3500 = S.identify_configuration(car_params(fake_vin("3C63R3GL")), self.t)
+    assert abs(self.floor_lb(crew_long_3500, 0., 100.)[0] - 7809.) < 1e-6  # standard output, lighter than the high output's 7,974
+
+  def test_no_floor_without_configuration(self):
+    assert self.floor_lb(S.Configuration(), 0., 100.) == (None, "none")
+    assert self.floor_lb(S.Configuration({"model_year": 2022}), 0., None) == (None, "none")
+    assert self.floor_lb(self.eric, 0., 100., table=False) == (None, "none")

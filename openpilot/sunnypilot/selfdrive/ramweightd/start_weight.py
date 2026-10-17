@@ -339,15 +339,22 @@ def fuel_density_lb_per_gal(fields: dict, table: WeightTable | None) -> float:
   return gasoline if fields.get("engine") == "hemi_6.4" else diesel  # unknown engine: diesel, like most Ram HD
 
 
-def _table_estimate(fields: dict, rows: list[dict]) -> tuple[str, float, float, str] | None:
-  """(source, curb weight lb, uncertainty kg, words) from the matching rows, or None when they are too different."""
+def _identified_rows(rows: list[dict]) -> list[dict] | None:
+  """The standard-box rows of an identified configuration, or None when the rows differ in more than the bed (when
+  not identified) and the Cummins output with its gearbox (when the VIN says Cummins without the output)."""
   if not rows or not all(c.get("curb_weight_lb") for c in rows):
     return None
   standard = [c for c in rows if c["box_variant"] == "standard"] or rows
-  # allowed differences: the bed (when not identified), and the Cummins output with its gearbox (when the VIN
-  # says Cummins without the output)
   ignore = {"bed"} | ({"engine", "transmission"} if {c["engine"] for c in standard} <= {"cummins_so", "cummins_ho"} else set())
   if len({tuple(c[k] for k in ALL_FIELDS if k not in ignore) for c in standard}) != 1:
+    return None
+  return standard
+
+
+def _table_estimate(fields: dict, rows: list[dict]) -> tuple[str, float, float, str] | None:
+  """(source, curb weight lb, uncertainty kg, words) from the matching rows, or None when they are too different."""
+  standard = _identified_rows(rows)
+  if standard is None:
     return None
   curbs = [c["curb_weight_lb"] for c in standard]
   curb = sum(curbs) / len(curbs)
@@ -419,3 +426,32 @@ def choose_start_weight(config: Configuration, table: WeightTable | None, base_w
 
   return StartWeight(cp_mass_kg, FALLBACK_STD_KG, "fallback", tank_gal, lb_per_gal, known,
                      f"platform weight {cp_mass_kg / LB_TO_KG:.0f} lb from CarParams (configuration or table weight unknown)")
+
+
+@dataclass
+class WeightFloor:
+  mass_kg: float | None   # None: no floor
+  source: str             # "setting", "table" or "none"
+  detail: str
+
+
+def weight_floor(config: Configuration, table: WeightTable | None, empty_weight_lb: float, fuel_level_pct: float | None,
+                 tank_gal: float, lb_per_gal: float) -> WeightFloor:
+  """The lowest weight the truck can have: its empty weight minus the fuel not in the tank (Eric's decision,
+  edfrahm/SP-RamHD-TICI-Port#8). Empty weight: the setting CruiseEmptyWeightLb when above 0 (Eric's truck: 8,040 lb,
+  its sticker weight; whether that includes fuel is not known, so subtracting the missing fuel keeps the floor safe
+  either way), else Ram's published curb weight for the identified configuration without the options allowance
+  (lower trims may have fewer options; the lightest of the candidate rows), else no floor. The fuel not in the tank is
+  the whole tank when the level is not known."""
+  if empty_weight_lb > 0.:
+    empty_lb, source = empty_weight_lb, "setting"
+  else:
+    rows = _identified_rows(matching_configs(config.fields, table)) if table else None
+    if rows is None:
+      return WeightFloor(None, "none", "no floor (configuration not identified and CruiseEmptyWeightLb not set)")
+    empty_lb, source = min(c["curb_weight_lb"] for c in rows), "table"
+  full_lb = tank_gal * lb_per_gal
+  missing_lb = full_lb if fuel_level_pct is None else (1. - min(max(fuel_level_pct, 0.), 100.) / 100.) * full_lb
+  words = "level unknown: as if empty" if fuel_level_pct is None else f"{fuel_level_pct:.0f} percent full"
+  return WeightFloor((empty_lb - missing_lb) * LB_TO_KG, source,
+                     f"{source} empty weight {empty_lb:.0f} lb minus {missing_lb:.0f} lb of fuel not in the tank ({words})")

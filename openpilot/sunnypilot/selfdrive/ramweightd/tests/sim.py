@@ -48,7 +48,7 @@ class Sensors:
   transmission: bool = True        # TCM_1 frames (converter lock, gears)
   comma_accelerometer: bool = True  # the Comma's accelerometer events
   fuel_level: bool = False
-  sensor_offset: float = -0.02     # ESP_4 offset, m/s2 (about -0.002 in grade on Eric's drives)
+  sensor_offset: float = 0.0       # ESP_4 offset, m/s2 (about zero on Eric's drives)
   comma_offset: float = 0.17       # the Comma's accelerometer offset, m/s2 (0.13-0.19 on Eric's drives)
   comma_tilt: float = 0.0038       # the Comma's extra tilt per m/s2 of acceleration (cab on its mounts)
   pitch_bias: float = 0.0          # left-over error of the Comma's pitch, radians

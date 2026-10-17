@@ -19,8 +19,9 @@ from openpilot.selfdrive.locationd.helpers import Pose, PoseCalibrator
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import Inputs, LB_TO_KG, Output, WeightGradeEstimator, valid_persisted_state
 from openpilot.sunnypilot.selfdrive.ramweightd.ram_signals import RamSignalReader, gear_from_code
 from openpilot.sunnypilot.selfdrive.ramweightd.settings import RAM_HD_PLATFORM
-from openpilot.sunnypilot.selfdrive.ramweightd.start_weight import (UNKNOWN_FUEL_FRACTION, Configuration, StartWeight, WeightTable,
-                                                                    choose_start_weight, identify_configuration, load_weight_table)
+from openpilot.sunnypilot.selfdrive.ramweightd.start_weight import (UNKNOWN_FUEL_FRACTION, Configuration, StartWeight, WeightFloor,
+                                                                    WeightTable, choose_start_weight, identify_configuration,
+                                                                    load_weight_table, weight_floor)
 
 RAM_HD_BRAND = "chrysler"
 SHIFT_SETTLE_S = 1.0  # after the actual gear changes, the shift counts as in progress this long
@@ -41,7 +42,7 @@ def _bool(x: float | None) -> bool | None:
 class WeightGradeRunner:
   def __init__(self, CP, base_weight_lb: float = 0., known_extra_lb: float = 0., persisted: dict | None = None,
                table: WeightTable | None = None, dbc_name: str | None = None, record_windows: bool = False,
-               table_path: str | None = None):
+               table_path: str | None = None, empty_weight_lb: float = 0.):
     self.CP = CP
     self.reader = RamSignalReader(dbc_name or DBC[CP.carFingerprint][Bus.pt])
     self.table = table if table is not None else load_weight_table(table_path)
@@ -50,7 +51,10 @@ class WeightGradeRunner:
     self.base_weight_lb = base_weight_lb
     self.known_extra_lb = known_extra_lb
     self.tank_gal_reported: float | None = None
+    self.empty_weight_lb = empty_weight_lb
     self.start: StartWeight = self._choose_start(None)
+    self.floor: WeightFloor = self._floor(None)
+    self.floor_level: float | None = None
 
     # the kept estimate is used only when it belongs to this configuration
     self.persisted_used = bool(persisted) and valid_persisted_state(persisted) and \
@@ -77,13 +81,26 @@ class WeightGradeRunner:
     return choose_start_weight(self.configuration, self.table, self.base_weight_lb, fuel_level_pct, self.CP.mass,
                                self.tank_gal_reported)
 
-  def set_settings(self, base_weight_lb: float, known_extra_lb: float) -> None:
+  def _floor(self, fuel_level_pct: float | None) -> WeightFloor:
+    return weight_floor(self.configuration, self.table, self.empty_weight_lb, fuel_level_pct, self.start.tank_gal, self.start.lb_per_gal)
+
+  def set_settings(self, base_weight_lb: float, known_extra_lb: float, empty_weight_lb: float | None = None) -> None:
     """Settings may change between drives or during one. The base weight only changes the published starting weight
-    (the reference for measuring accuracy); the estimate itself is not restarted."""
+    (the reference for measuring accuracy); the estimate itself is not restarted. The empty weight sets the floor."""
     self.known_extra_lb = known_extra_lb
     if base_weight_lb != self.base_weight_lb:
       self.base_weight_lb = base_weight_lb
       self.start = self._choose_start(self.estimator.fuel.first_level_pct)
+    if empty_weight_lb is not None and empty_weight_lb != self.empty_weight_lb:
+      self.empty_weight_lb = empty_weight_lb
+      self.floor = self._floor(self.estimator.fuel.level_pct)
+
+  def published_mass_kg(self, mass_kg: float) -> tuple[float, bool]:
+    """The estimate with the floor applied: (mass, at the floor)."""
+    floor = self.floor.mass_kg
+    if floor is not None and mass_kg < floor:
+      return floor, True
+    return mass_kg, False
 
   # ---- message input ----
   def handle_can_events(self, events) -> None:
@@ -195,6 +212,7 @@ class WeightGradeRunner:
       self.tank_gal_reported = tank
       self.start = self._choose_start(self.estimator.fuel.first_level_pct)
       self.estimator.fuel.set_tank(self.start.tank_gal, self.start.lb_per_gal)
+      self.floor = self._floor(self.estimator.fuel.level_pct)
     self.accel_sum = [0., 0., 0.]
     self.accel_count = 0
     first_level = self.estimator.fuel.first_level_pct
@@ -202,6 +220,10 @@ class WeightGradeRunner:
     if first_level is None and self.estimator.fuel.first_level_pct is not None and self.start.source != "fallback":
       # the fuel level became known: the starting weight no longer needs the half-tank assumption
       self.start = self._choose_start(self.estimator.fuel.first_level_pct)
+    level = self.estimator.fuel.level_pct
+    if level is not None and (self.floor_level is None or abs(level - self.floor_level) > 1.):
+      self.floor = self._floor(level)  # the fuel not in the tank, as it changes
+      self.floor_level = level
     self.last_inputs, self.last_output = inp, out
     return out
 
@@ -215,7 +237,11 @@ class WeightGradeRunner:
       x = r.get(name, now_nanos)
       return default if x is None else x
 
-    rwg.massKg = float(out.mass_kg)
+    mass, at_floor = self.published_mass_kg(out.mass_kg)
+    rwg.massKg = float(mass)
+    rwg.massUnclampedKg = float(out.mass_kg)
+    rwg.atFloor = at_floor
+    rwg.massFloorKg = float(self.floor.mass_kg or 0.)
     rwg.massStdKg = float(out.mass_std_kg)
     rwg.dragNPerMps2 = float(out.drag)
     rwg.dragStdNPerMps2 = float(out.drag_std)
@@ -270,7 +296,8 @@ class WeightGradeRunner:
 
   def state(self) -> dict:
     """RamWeightGradeState: the estimate kept between drives, tagged with the configuration in words (no VIN)."""
-    s = self.estimator.state()
+    s = self.estimator.state()  # the filter's own (unclamped) estimate, so the next drive starts from what it learned
     s["platform"] = self.CP.carFingerprint
     s["configuration"] = self.configuration_text
+    s["floor_kg"] = None if self.floor.mass_kg is None else round(self.floor.mass_kg, 1)
     return s
