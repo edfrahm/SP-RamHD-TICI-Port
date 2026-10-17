@@ -145,8 +145,8 @@ PITCH_CORRELATION = 4.          # the Comma's pitch is itself a filtered estimat
 # itself, so fits against it shrink toward a third). So whenever an accelerometer is available, the pitch is not used.
 # Compared with ESP_4, the Comma's accelerometer reads +0.13 to +0.19 m/s2 higher (mean 0.16: accelerometer bias plus
 # what the calibration leaves of the mounting tilt) and tilts a further 0.0027-0.0046 rad nose-up per m/s2 of
-# acceleration (mean 0.0038: the cab and windshield pitching on the body mounts). Another Comma or mounting may differ;
-# with ESP_4 present the offset is learned against it.
+# acceleration (mean 0.0038: the cab and windshield pitching on the body mounts). Another Comma or mounting may differ.
+# It is used only when ESP_4 is not available (see GradeFilter.step).
 COMMA_ACCEL_OFFSET_MPS2 = 0.16
 COMMA_ACCEL_OFFSET_STD = 0.04
 COMMA_TILT_PER_ACCEL = 0.0038
@@ -242,8 +242,8 @@ class GradeFilter:
   - stability sensor (ESP_4) and the Comma's accelerometer: each feels acceleration plus gravity along the
     slope; wheel speed gives the acceleration alone, so (accelerometer - wheel-speed acceleration) = g * sine(grade)
     + offset. Both sides are smoothed by the same low-pass filter so their timing matches.
-    ESP_4 (verified in #5) is the primary one; the Comma's accelerometer is corrected for its offset and its extra
-    tilt (COMMA_ACCEL_OFFSET_MPS2, COMMA_TILT_PER_ACCEL).
+    ESP_4 (verified in #5) is used whenever it is available; otherwise the Comma's accelerometer, corrected for its
+    offset and its extra tilt (COMMA_ACCEL_OFFSET_MPS2, COMMA_TILT_PER_ACCEL).
   - the Comma's pitch (deviceMotion orientation turned into the truck's frame with extrinsicsCalibration), used only
     when no accelerometer is available and the pitch is plausible; then the published uncertainty is wide.
   """
@@ -297,6 +297,11 @@ class GradeFilter:
     used_sensor, self.sensor_samples = self._accelerometer(self.sensor_lpf, self.sensor_samples, sensor_accel, dt, (G, 1., 0.),
                                                            SENSOR_NOISE_MPS2, body_pitch)
     if comma_accel is not None and not (abs(comma_accel) < COMMA_ACCEL_SANITY_MPS2):
+      comma_accel = None
+    if sensor_accel is not None:
+      # with ESP_4 the Comma's accelerometer is not used: only the two offsets' difference is observable, and the
+      # Comma's own offset wanders (0.085-0.16 m/s2 within Eric's drives), which dragged their shared level and with it
+      # every grade (by up to 0.009), and the weight 5-10 percent low (drive 0000076b: 7,354 lb with both, 8,046 alone)
       comma_accel = None
     used_comma, self.comma_samples = self._accelerometer(self.comma_lpf, self.comma_samples, comma_accel, dt, (G, 0., 1.),
                                                          COMMA_ACCEL_NOISE_MPS2, body_pitch + COMMA_TILT_PER_ACCEL * self.wheel_accel)

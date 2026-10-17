@@ -100,6 +100,16 @@ class TestConvergence(OpenpilotTestCase):
     errs = [outs[k].grade - math.tan(math.asin(sim.log.sine[10 * k])) for k in range(200, len(outs))]
     assert math.sqrt(sum(e * e for e in errs) / len(errs)) < 0.004
 
+  def test_comma_accelerometer_not_used_with_esp4(self):
+    # drive 0000076b: fusing both let their shared offset drift and read every grade too steep; with ESP_4 present a
+    # wandering Comma accelerometer offset must not matter
+    sim = varied("esp")[0]
+    base = [est_out.grade for est_out in run(sim)[1]]
+    shifted = [Inputs(**{**inp.__dict__, "comma_accel": inp.comma_accel + 0.5 + 0.001 * k}) for k, inp in enumerate(sim.inputs())]
+    est = WeightGradeEstimator(3500., 600., 32., 7.1, body_pitch_per_accel=BODY_PITCH)
+    grades = [est.step(i).grade for i in shifted]
+    assert max(abs(a - b) for a, b in zip(base, grades, strict=True)) < 1e-9
+
   def test_implausible_pitch_is_skipped(self):
     g = E.GradeFilter()
     for _ in range(50):
@@ -123,7 +133,7 @@ class TestUncertainty(OpenpilotTestCase):
     assert abs(predicted / true - 1.) < 0.06
 
   def test_varied_driving_narrows_the_weight(self):
-    for mode, limit in (("esp", 150.), ("comma", 250.), ("pitch", 600.)):  # the Comma's pitch alone: wide
+    for mode, limit in (("esp", 200.), ("comma", 250.), ("pitch", 600.)):  # the Comma's pitch alone: wide
       sim, est, outs = varied(mode)
       assert outs[-1].mass_std_kg < limit, (mode, outs[-1].mass_std_kg)
       assert outs[-1].mass_drag_correlation > -0.8
