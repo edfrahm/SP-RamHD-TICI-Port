@@ -209,9 +209,12 @@ def main(argv: list[str] | None = None) -> int:
   print(f"signals available at the end: {', '.join(runner.available_fields(runner.reader.last_nanos))}")
   print(f"final estimate: {lb(out.mass_kg):.0f} lb +/- {lb(out.mass_std_kg):.0f} lb, air drag {out.drag:.2f} +/- {out.drag_std:.2f} " +
         f"N/(m/s)^2, weight-drag correlation {out.mass_drag_correlation:+.2f}")
+  kept = runner.state()
+  print(f"kept for the next drive (before any widening at the last stop): {lb(kept['mass_kg']):.0f} lb +/- " +
+        f"{lb(kept['mass_std_kg']):.0f} lb, air drag {kept['drag']:.2f} +/- {kept['drag_std']:.2f}")
   if args.known_mass_lb:
-    err = lb(out.mass_kg) - args.known_mass_lb
-    sigmas = abs(err) / max(lb(out.mass_std_kg), 1e-6)
+    err = lb(kept["mass_kg"]) - args.known_mass_lb
+    sigmas = abs(err) / max(lb(kept["mass_std_kg"]), 1e-6)
     print(f"known weight {args.known_mass_lb:.0f} lb: error {err:+.0f} lb ({100. * err / args.known_mass_lb:+.1f}%), " +
           f"{sigmas:.1f} standard deviations ({'within' if sigmas <= 2. else 'outside'} two)")
   return 0

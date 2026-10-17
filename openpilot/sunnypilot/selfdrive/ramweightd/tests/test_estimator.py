@@ -102,11 +102,12 @@ class TestUncertainty(OpenpilotTestCase):
     assert abs(predicted / true - 1.) < 0.03
 
   def test_varied_driving_narrows_the_weight(self):
-    sim, est, outs = varied(False)
-    assert outs[-1].mass_std_kg < 100.
-    assert outs[-1].mass_drag_correlation > -0.8
-    # narrowing comes with the varied driving: the first minute is still wide
-    assert outs[600].mass_std_kg > 2. * outs[-1].mass_std_kg
+    for sensor, limit in ((True, 100.), (False, 250.)):  # the Comma's pitch alone: grades do not count, slower
+      sim, est, outs = varied(sensor)
+      assert outs[-1].mass_std_kg < limit, (sensor, outs[-1].mass_std_kg)
+      assert outs[-1].mass_drag_correlation > -0.8
+      # narrowing comes with the varied driving: the first minute is still wide
+      assert outs[600].mass_std_kg > 2. * outs[-1].mass_std_kg
 
 
 class TestStops(OpenpilotTestCase):

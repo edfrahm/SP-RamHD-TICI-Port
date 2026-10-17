@@ -105,7 +105,9 @@ GATE_SIGMA = 3.0           # innovations beyond this many standard deviations ar
 # road) tells nothing about the weight by itself: there, noise in the measured grade and acceleration would look like
 # information and pull the weight down (the "errors in the input variables" bias). Such a window is used only for
 # the combination mass * g * rolling resistance + c * speed^2; its small acceleration and grade terms are moved to the
-# measured side using the current weight estimate.
+# measured side using the current weight estimate. With the Comma's pitch alone, only the acceleration counts as
+# excitation: grades measured that way are too uncertain to tell the weight (see PITCH_ONLY_STD_FLOOR) and stay in
+# the equation only as a correction with their uncertainty.
 EXCITATION_SIGMAS = 3.0
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -132,7 +134,11 @@ SENSOR_GATE_SIGMA = 5.0
 SENSOR_WARMUP_SAMPLES = 10
 PITCH_NOISE_FLOOR = 0.004       # mounting and body-pitch error left after the Comma's calibration
 PITCH_CORRELATION = 4.          # the Comma's pitch is itself a filtered estimate: successive samples share errors
-PITCH_ONLY_STD_FLOOR = 0.006    # without the stability sensor, never claim a grade better than this
+# Without the stability sensor, never claim a grade better than this. On Eric's first three drives (2026-10-16) the
+# Comma's pitch disagreed with the grade implied by the engine force by about 0.015-0.018 (rise over run, rms), and
+# its grade changes were about 2.5 times larger than the engine force followed (a ratio that does not depend on the
+# unknown weight or efficiency); the cause is not known yet (no GPS fix, stability sensor pending in #5).
+PITCH_ONLY_STD_FLOOR = 0.015
 MAX_SINE_GRADE = 0.37           # rise over run 0.4
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -494,6 +500,7 @@ class Window:
   cosine: float
   v2: float             # mean of speed squared
   grade_std: float
+  pitch_only: bool = False  # the grade came from the Comma's pitch alone
 
 
 def _trapezoid_mean(ts: list[float], xs: list[float]) -> float:
@@ -510,7 +517,7 @@ class WindowAccumulator:
   def reset(self) -> None:
     self.samples = []
 
-  def add(self, sample: WindowSample, grade_std: float) -> Window | None:
+  def add(self, sample: WindowSample, grade_std: float, pitch_only: bool = False) -> Window | None:
     self.samples.append(sample)
     if len(self.samples) < WINDOW_SAMPLES + 1:
       return None
@@ -529,6 +536,7 @@ class WindowAccumulator:
       cosine=_trapezoid_mean(ts, [x.cosine for x in s]),
       v2=_trapezoid_mean(ts, [x.v * x.v for x in s]),
       grade_std=grade_std,
+      pitch_only=pitch_only,
     )
     self.samples = [s[-1]]  # windows touch but do not overlap
     return w
@@ -549,7 +557,7 @@ def window_measurement(w: Window, fuel_offset_kg: float, mass_guess_kg: float, m
   R = FORCE_NOISE_N ** 2 + (FORCE_REL_NOISE * force) ** 2 + (mass_guess_kg * ACCEL_NOISE_MPS2) ** 2 + \
       GRADE_ERROR_CORRELATION * (mass_guess_kg * G * w.grade_std) ** 2
   noise_width = math.hypot(ACCEL_NOISE_MPS2, G * w.grade_std)
-  if abs(excitation) < EXCITATION_SIGMAS * noise_width:
+  if abs(w.accel if w.pitch_only else excitation) < EXCITATION_SIGMAS * noise_width:
     z -= (mass_guess_kg - fuel_offset_kg) * excitation
     R += mass_var * excitation ** 2
     return (h_level, w.v2), z, R, False
@@ -762,7 +770,7 @@ class WeightGradeEstimator:
       omega = inp.engine_rpm * 2. * math.pi / 60.
       s = self.grade.sine
       sample = WindowSample(inp.t, inp.v, inp.engine_torque_nm * omega / inp.v, omega, s, math.sqrt(1. - s * s))
-      w = self.window.add(sample, self.grade.grade_std)
+      w = self.window.add(sample, self.grade.grade_std, self.grade.source == "pitchOnly")
       if w is not None:
         H, z, R, _ = window_measurement(w, self.fuel_offset_kg, self.mass.mass, self.mass.P[0][0], self.efficiency,
                                         self.rolling_resistance)
