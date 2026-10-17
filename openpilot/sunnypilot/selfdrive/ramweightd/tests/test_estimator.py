@@ -243,9 +243,9 @@ class TestFuel(OpenpilotTestCase):
 
 class TestRules(OpenpilotTestCase):
   def clean_inputs(self, **kw) -> Inputs:
-    base = dict(t=0., v=20., gear="drive", brake_pedal=False, brake_pressure=0., accel_pedal_pct=20., acc_active=False,
-                acc_torque_request_nm=0., engine_rpm=1500., engine_torque_nm=400., shift_pending=False, exhaust_brake=False,
-                traction_control=False, lateral_accel=0.)
+    base = {"t": 0., "v": 20., "gear": "drive", "brake_pedal": False, "brake_pressure": 0., "accel_pedal_pct": 20., "acc_active": False,
+            "acc_torque_request_nm": 0., "engine_rpm": 1500., "engine_torque_nm": 400., "shift_pending": False, "exhaust_brake": False,
+            "traction_control": False, "lateral_accel": 0.}
     base.update(kw)
     return Inputs(**base)
 
