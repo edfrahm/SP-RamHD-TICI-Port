@@ -30,6 +30,7 @@ def sample_index(row) -> int:
 
 class RamPortTestCase(OpenpilotTestCase):
   def setUp(self):
+    super().setUp()
     self.params = Params()
     self.params.put_bool("EnableSunnylinkUploader", True, block=True)
     self.params.put("CarParams", synthetic.car_params_bytes(), block=True)

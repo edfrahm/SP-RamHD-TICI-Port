@@ -48,6 +48,7 @@ BACKOFF_START_S = 60.0
 BACKOFF_MAX_S = 6 * 3600.0
 IDLE_S = 10.0
 
+DEFAULT_TIMEOUT = (10, 120)  # seconds to connect, seconds to wait for the answer
 DEVICE_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 USER_AGENT = "ramportd/1"
 
@@ -135,7 +136,7 @@ def make_upload_signature(key: DeviceKey, device_id: str, file_name: str, body: 
 class RamPortClient:
   """Talks to the upload service. It only sends; the service offers nothing to read."""
 
-  def __init__(self, host: str, key: DeviceKey, session: requests.Session | None = None, timeout=(10, 120)):
+  def __init__(self, host: str, key: DeviceKey, session: requests.Session | None = None, timeout=DEFAULT_TIMEOUT):
     self.host = host.rstrip("/")
     self.key = key
     self.session = session or requests.Session()
@@ -186,7 +187,7 @@ class QueueUploader:
 
   def __init__(self, root: str, params, host: str | None = None, key_loader=load_device_key, hardware_ids=None,
                session: requests.Session | None = None, clock=time.monotonic, queue_limit_bytes: int = DEFAULT_QUEUE_LIMIT_BYTES,
-               time_valid=None):
+               time_valid=None, timeout=DEFAULT_TIMEOUT):
     self.root = root
     self.params = params
     self.host = host or api_host()
@@ -195,6 +196,7 @@ class QueueUploader:
     self.session = session or requests.Session()
     self.clock = clock
     self.queue_limit_bytes = queue_limit_bytes
+    self.timeout = timeout
     if time_valid is None:
       from openpilot.common.time_helpers import system_time_valid
       time_valid = system_time_valid
@@ -238,7 +240,7 @@ class QueueUploader:
     if key is None:
       cloudlog.error("ramport: no device key found")
       return None
-    return RamPortClient(self.host, key, session=self.session)
+    return RamPortClient(self.host, key, session=self.session, timeout=self.timeout)
 
   def register(self, client: RamPortClient) -> str | None:
     """Register this device. Stores and returns the device ID, or None."""
