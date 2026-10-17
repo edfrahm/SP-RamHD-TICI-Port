@@ -497,5 +497,50 @@ struct CustomReserved17 @0xa30662f84033036c {
 struct CustomReserved18 @0xc86a3d38d13eb3ef {
 }
 
-struct CustomReserved19 @0xa4f1eb3323f5f582 {
+# Ram Heavy Duty weight and road-grade estimate (edfrahm/SP-RamHD-TICI-Port#8). Published only: nothing
+# reads it to steer, accelerate or brake in this stage. Units are SI (kilograms, newtons, meters per second).
+struct RamWeightGrade @0xa4f1eb3323f5f582 {
+  # combined weight of truck, people, load and any trailer, and one standard deviation of that estimate
+  massKg @0 :Float32;
+  massStdKg @1 :Float32;
+  # air drag: drag force in newtons = this value times speed squared (speed in meters per second)
+  dragNPerMps2 @2 :Float32;
+  dragStdNPerMps2 @3 :Float32;
+  # road grade as rise over run (0.05 is a 5 percent climb), positive uphill
+  grade @4 :Float32;
+  gradeStd @5 :Float32;
+
+  # true when this moment met the clean-moment rules and was used to update the weight
+  cleanMoment @6 :Bool;
+  cleanSamples @7 :UInt32;
+  fuelBurnedKg @8 :Float32;
+  startMassKg @9 :Float32;
+  startSource @10 :StartSource;
+  # the known extra load entered for a validation drive (setting CruiseKnownExtraLb), for comparison only
+  knownExtraKg @11 :Float32;
+  # the identified truck configuration, in words
+  configuration @12 :Text;
+
+  # decoded truck signals; a signal not yet verified on this truck is absent from availableSignals
+  engineRpm @13 :Float32;
+  engineTorqueNm @14 :Float32;
+  gearActual @15 :Int8;
+  gearDesired @16 :Int8;
+  converterLocked @17 :Bool;
+  shiftPending @18 :Bool;
+  transInputRpm @19 :Float32;
+  transOutputRpm @20 :Float32;
+  serviceBrakeOn @21 :Bool;
+  exhaustBrakeOn @22 :Bool;
+  towHaulOn @23 :Bool;
+  trailerConnected @24 :Bool;
+  fuelLevelPct @25 :Float32;
+  availableSignals @26 :List(Text);
+
+  enum StartSource {
+    setting @0;          # the device setting CruiseBaseWeightLb (Eric's truck: 8,400 lb)
+    table @1;            # published curb weight for the identified configuration, plus allowances
+    tableBedAverage @2;  # as above, averaged over both bed lengths because the bed could not be identified
+    fallback @3;         # configuration unknown: the platform's default weight, with a wide uncertainty
+  }
 }
