@@ -21,6 +21,10 @@ from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.common.version import sunnylink_consent_version, sunnylink_consent_declined
 
+# One opt-in for sunnylink's uploader and the Ram port shared data upload (edfrahm/SP-RamHD-TICI-Port#9).
+# The name is shown exactly as written, untranslated, with no other text.
+UPLOAD_TOGGLE_TITLE = "SunnyPilot/Ram Port data Upload"
+
 class SunnylinkInfo(Widget):
   def __init__(self):
     super().__init__()
@@ -70,7 +74,7 @@ class SunnylinkLayoutMici(NavScroller):
     self._backup_btn.set_click_callback(lambda: self._handle_backup_restore_btn(restore=False))
     self._restore_btn = BigButton(tr("restore settings"), "")
     self._restore_btn.set_click_callback(lambda: self._handle_backup_restore_btn(restore=True))
-    self._sunnylink_uploader_toggle = BigToggle(text=tr("sunnylink uploader"), initial_state=False,
+    self._sunnylink_uploader_toggle = BigToggle(text=UPLOAD_TOGGLE_TITLE, initial_state=False,
                                                 toggle_callback=self._sunnylink_uploader_callback)
 
     self._scroller.add_widgets([
