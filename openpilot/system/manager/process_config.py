@@ -65,6 +65,10 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
+def ram_hd(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Ram Heavy Duty trucks only (edfrahm/SP-RamHD-TICI-Port#8)
+  return started and CP.brand == "chrysler" and CP.carFingerprint == "RAM_HD_5TH_GEN"
+
 def livestream(started: bool, params: Params, CP: car.CarParams) -> bool:
   return params.get_bool("IsLiveStreaming")
 
@@ -180,6 +184,9 @@ procs += [
 
   # locationd
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
+
+  # Ram Heavy Duty weight and grade estimator: publishes ramWeightGrade only, nothing uses it to drive
+  PythonProcess("ramweightd", "openpilot.sunnypilot.selfdrive.ramweightd.ramweightd", ram_hd),
 ]
 
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
