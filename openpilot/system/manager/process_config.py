@@ -12,6 +12,7 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.sunnypilot.mapd.mapd_manager import MAPD_PATH
 
 from openpilot.sunnypilot.models.helpers import get_active_model_runner
+from openpilot.sunnypilot.ramport import is_ram_hd
 from openpilot.sunnypilot.sunnylink.utils import sunnylink_need_register, sunnylink_ready, use_sunnylink_uploader
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
@@ -65,7 +66,7 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
 
-def ram_hd(started: bool, params: Params, CP: car.CarParams) -> bool:
+def ram_hd_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   # Ram Heavy Duty trucks only (edfrahm/SP-RamHD-TICI-Port#8)
   return started and CP.brand == "chrysler" and CP.carFingerprint == "RAM_HD_5TH_GEN"
 
@@ -86,6 +87,10 @@ def sunnylink_need_register_shim(started, params, CP: car.CarParams) -> bool:
 def use_sunnylink_uploader_shim(started, params, CP: car.CarParams) -> bool:
   """Shim for use_sunnylink_uploader to match the process manager signature."""
   return use_sunnylink_uploader(params)
+
+def ram_hd_shim(started, params, CP: car.CarParams) -> bool:
+  """Ram port shared data upload runs only on Ram Heavy Duty trucks (edfrahm/SP-RamHD-TICI-Port#9)."""
+  return is_ram_hd(params, CP)
 
 def is_tinygrad_model(started, params, CP: car.CarParams) -> bool:
   """Check if the active model runner is tinygrad."""
@@ -186,7 +191,10 @@ procs += [
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 
   # Ram Heavy Duty weight and grade estimator: publishes ramWeightGrade only, nothing uses it to drive
-  PythonProcess("ramweightd", "openpilot.sunnypilot.selfdrive.ramweightd.ramweightd", ram_hd),
+  PythonProcess("ramweightd", "openpilot.sunnypilot.selfdrive.ramweightd.ramweightd", ram_hd_onroad),
+
+  # Ram port shared data upload (edfrahm/SP-RamHD-TICI-Port#9)
+  PythonProcess("ramportd", "openpilot.sunnypilot.ramport.ramportd", ram_hd_shim),
 ]
 
 if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):

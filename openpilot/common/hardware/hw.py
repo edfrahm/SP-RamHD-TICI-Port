@@ -95,3 +95,11 @@ class Paths:
       return str(Path(Paths.comma_home()) / "media" / "0" / "osm")
     else:
       return "/data/media/0/osm"
+
+  @staticmethod
+  def ramport_root() -> str:
+    # Ram port shared data upload: drive files waiting to be sent (edfrahm/SP-RamHD-TICI-Port#9)
+    if PC:
+      return str(Path(Paths.comma_home()) / "media" / "0" / "ramport")
+    else:
+      return "/data/media/0/ramport"

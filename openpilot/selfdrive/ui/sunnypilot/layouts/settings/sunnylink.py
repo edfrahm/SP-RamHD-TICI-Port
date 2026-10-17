@@ -22,6 +22,10 @@ from openpilot.system.ui.widgets.list_view import dual_button_item
 from openpilot.system.ui.widgets.scroller_tici import Scroller, LineSeparator
 from openpilot.common.version import sunnylink_consent_version
 
+# One opt-in for sunnylink's uploader and the Ram port shared data upload (edfrahm/SP-RamHD-TICI-Port#9).
+# The name is shown exactly as written, untranslated, with no other text.
+UPLOAD_TOGGLE_TITLE = "SunnyPilot/Ram Port data Upload"
+
 
 class SunnylinkHeader(Widget):
   def __init__(self):
@@ -175,9 +179,7 @@ class SunnylinkLayout(Widget):
       callback=lambda: self._handle_pair_btn(True)
     )
     self._sunnylink_uploader_toggle = toggle_item_sp(
-      title=tr("Enable sunnylink uploader (infrastructure test)"),
-      description=tr("Enable sunnylink uploader to allow sunnypilot to upload your driving data to sunnypilot servers. ") +
-                  tr("(Only for highest tiers, and does NOT bring ANY benefit to you yet. We are just testing data volume.)"),
+      title=UPLOAD_TOGGLE_TITLE,
       param="EnableSunnylinkUploader"
     )
     self._sunnylink_backup_restore_buttons = dual_button_item(
