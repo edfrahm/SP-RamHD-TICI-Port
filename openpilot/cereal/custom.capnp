@@ -537,10 +537,42 @@ struct RamWeightGrade @0xa4f1eb3323f5f582 {
   fuelLevelPct @25 :Float32;
   availableSignals @26 :List(Text);
 
+  # estimator diagnostics (edfrahm/SP-RamHD-TICI-Port#8)
+  # one standard deviation of the starting weight startMassKg
+  startMassStdKg @27 :Float32;
+  # how converterLocked was decided: from the truck's own signal, or from the steady engine-to-wheel speed ratio
+  converterLockRule @28 :ConverterLockRule;
+  # which measurements the road grade came from
+  gradeSource @29 :GradeSource;
+  # one-second weight updates accepted this drive, and rejected as outliers
+  massUpdates @30 :UInt32;
+  rejectedUpdates @31 :UInt32;
+  # stops this drive after which the weight may have changed (see the estimator's README)
+  qualifyingStops @32 :UInt32;
+  # correlation between the weight and air-drag estimates, -1 to 1 (near -1: only their combination is known)
+  massDragCorrelation @33 :Float32;
+  # why this moment was not used for the weight, in words (empty when cleanMoment is true)
+  notCleanReasons @34 :List(Text);
+  # learned offset of the stability-control sensor's acceleration reading, meters per second squared
+  stabilitySensorOffsetMps2 @35 :Float32;
+
   enum StartSource {
     setting @0;          # the device setting CruiseBaseWeightLb (Eric's truck: 8,400 lb)
     table @1;            # published curb weight for the identified configuration, plus allowances
     tableBedAverage @2;  # as above, averaged over both bed lengths because the bed could not be identified
     fallback @3;         # configuration unknown: the platform's default weight, with a wide uncertainty
+  }
+
+  enum ConverterLockRule {
+    none @0;             # engine or wheel speed missing: no decision
+    signal @1;           # the transmission's own torque converter lock signal
+    ratioFallback @2;    # fallback: engine speed / wheel speed held within about 1 percent for 2 seconds
+  }
+
+  enum GradeSource {
+    none @0;             # no grade measurement yet
+    pitchOnly @1;        # the Comma's own pitch estimate only (wider uncertainty)
+    sensorAndPitch @2;   # stability-control sensor acceleration minus wheel-speed acceleration, blended with the Comma's pitch
+    sensorOnly @3;       # stability-control sensor only (the Comma's pitch is not calibrated yet)
   }
 }
