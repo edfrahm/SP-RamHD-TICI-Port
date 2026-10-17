@@ -34,7 +34,9 @@ from openpilot.sunnypilot.ramport.drive_format import FILE_NAME_RE, MAX_FILE_BYT
 from openpilot.sunnypilot.ramport.drive_writer import DEFAULT_QUEUE_LIMIT_BYTES, enforce_queue_limit, queued_files
 
 # PLACEHOLDER: the real service address is not known yet. Replace it once the Azure Function is deployed.
-DEFAULT_API_HOST = "https://ramport-upload-relay.azurewebsites.net"
+# Until then the address ends in ".invalid", a name reserved never to exist (RFC 2606), so no device can send its
+# registration (serial number and modem ID) to a server someone else might set up under a guessed name.
+DEFAULT_API_HOST = "https://ramport-upload-relay.invalid"
 API_HOST_ENV = "RAMPORT_API_HOST"  # environment variable that overrides the address, for tests
 
 REGISTER_PATH = "/api/register"
