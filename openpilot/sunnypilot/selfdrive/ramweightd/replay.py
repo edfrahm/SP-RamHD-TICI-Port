@@ -117,6 +117,7 @@ def add_estimator_arguments(parser: argparse.ArgumentParser) -> None:
   parser.add_argument("logs", nargs="+", help="route names, segment folders or rlog files")
   parser.add_argument("--root", help=f"folder holding <route>--<n> segment folders (default {DEVICE_ROOT} or {MAC_ROOT})")
   parser.add_argument("--base-weight-lb", type=float, default=0., help="replay as if CruiseBaseWeightLb were set to this")
+  parser.add_argument("--empty-weight-lb", type=float, default=0., help="replay as if CruiseEmptyWeightLb were set to this")
   parser.add_argument("--dbc", help="message database name or file (default: the platform's)")
   parser.add_argument("--table", help="published-weight table file (default: ram_hd_weights.json next to the service)")
   parser.add_argument("--efficiency", type=float, default=est.EFFICIENCY)
@@ -127,7 +128,8 @@ def add_estimator_arguments(parser: argparse.ArgumentParser) -> None:
 def runner_factory(args, record_windows: bool = False):
   def make(CP):
     r = WeightGradeRunner(CP, base_weight_lb=args.base_weight_lb, known_extra_lb=getattr(args, "known_extra_lb", 0.),
-                          dbc_name=args.dbc, table_path=args.table, record_windows=record_windows)
+                          dbc_name=args.dbc, table_path=args.table, record_windows=record_windows,
+                          empty_weight_lb=getattr(args, "empty_weight_lb", 0.))
     e = r.estimator
     e.efficiency = args.efficiency
     e.rolling_resistance = args.rolling_resistance
@@ -214,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
   kept = runner.state()
   print(f"kept for the next drive (before any widening at the last stop): {lb(kept['mass_kg']):.0f} lb +/- " +
         f"{lb(kept['mass_std_kg']):.0f} lb, air drag {kept['drag']:.2f} +/- {kept['drag_std']:.2f}")
+  published, at_floor = runner.published_mass_kg(kept["mass_kg"])
+  print(f"weight floor: {runner.floor.detail}" + (f" = {lb(runner.floor.mass_kg):.0f} lb" if runner.floor.mass_kg else "") +
+        f"; published weight {lb(published):.0f} lb" + (" (at the floor; the estimate itself is below it)" if at_floor else ""))
   if args.known_mass_lb:
     err = lb(kept["mass_kg"]) - args.known_mass_lb
     sigmas = abs(err) / max(lb(kept["mass_std_kg"]), 1e-6)

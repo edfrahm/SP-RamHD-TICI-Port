@@ -50,8 +50,10 @@ and the offset of the Comma's accelerometer. Measurements, in order of preferenc
    tenth of a second and turned into the truck's frame with the Comma's mounting angles from `extrinsicsCalibration`):
    the same principle. Compared with ESP_4 it reads 0.13-0.19 m/s² higher (mean 0.16: its bias and what the calibration
    leaves of the mounting tilt) and tilts a further 0.0038 rad nose-up per m/s² of acceleration (the cab pitching on its
-   mounts); both are corrected (`COMMA_ACCEL_OFFSET_MPS2`, `COMMA_TILT_PER_ACCEL`). With ESP_4 present its offset is
-   learned against ESP_4.
+   mounts); both are corrected (`COMMA_ACCEL_OFFSET_MPS2`, `COMMA_TILT_PER_ACCEL`). **Used only when ESP_4 is not
+   available**: fused with ESP_4, only the two offsets' difference is observable, and the Comma's own offset wanders
+   (0.085-0.16 m/s² within Eric's drives); their shared level drifted and read every grade up to 0.009 too steep,
+   which made drive 0000076b 700 lb too light (see "Findings").
 3. **The Comma's pitch** (`deviceMotion` orientation, called `livePose` in older versions, turned into the truck's
    frame like controlsd does): used **only when no accelerometer is available**, and only when plausible (older
    software logged pitches down to -61°). Then the grade's uncertainty is wide: never below 0.015, growing by 0.6 of
@@ -105,7 +107,7 @@ Starting values ("priors"), all at the top of `estimator.py`:
 | `ENGINE_INERTIA_KGM2` | 1.5 | engine, flexplate and locked converter; matters in low gears |
 | `ROTATING_MASS_KG` | 120 | wheels, tires, rotors, shafts act like this much extra mass when speeding up |
 | `BODY_PITCH_PER_ACCEL` | 0 | fitted by `calibrate.py` |
-| `COMMA_ACCEL_OFFSET_MPS2`, `COMMA_TILT_PER_ACCEL` | 0.16, 0.0038 | the Comma's accelerometer against ESP_4 on Eric's nine drives |
+| `COMMA_ACCEL_OFFSET_MPS2`, `COMMA_TILT_PER_ACCEL` | 0.16, 0.0038 | the Comma's accelerometer against ESP_4 on Eric's nine drives (used only without ESP_4) |
 
 ## Clean moments
 
@@ -148,6 +150,19 @@ uncertainty grows to 1.0. (Once a trailer signal is verified and says "no traile
 The estimate is kept in the setting `RamWeightGradeState` at qualifying stops, every minute, and when the drive ends.
 The kept uncertainty is the learned one, not a widening nothing was learned from since. The next drive starts from it
 (widened), but only when it belongs to the same platform and configuration. No VIN, no location is stored.
+
+## Weight floor
+
+The published weight (`massKg`) never goes below the **floor** = empty weight minus the fuel not in the tank (Eric's
+decision). Empty weight: the setting `CruiseEmptyWeightLb` when above 0 (Eric's truck: 8,040 lb, its sticker weight),
+else Ram's published curb weight for the identified configuration without the options allowance (lower trims may have
+fewer options; the lightest candidate when the bed or the 3500 Cummins output is not identified), else no floor. The
+fuel not in the tank is the whole tank when the level is not known, so the floor holds whether or not the sticker
+weight includes fuel: Eric's floor is 8,040 - 219 = 7,821 lb with an empty 31-gallon tank.
+
+The filter itself is not clamped: `massUnclampedKg` is its estimate, `atFloor` says the floor applied and
+`massFloorKg` is the floor (0 when there is none), so an estimator error stays visible. The estimate kept between
+drives is the unclamped one, with the floor stored next to it for the settings screen.
 
 ## Fuel
 
@@ -222,11 +237,14 @@ the sources, fuel weights, VIN rules and engine part numbers. To regenerate:
 In **Settings > Vehicle** (the Chrysler/Ram panel), shown only on a Ram Heavy Duty:
 
 - **Starting Weight** (`CruiseBaseWeightLb`): EDIT, type pounds (0 to 40,000). 0 uses Ram's published weight.
+- **Empty Weight** (`CruiseEmptyWeightLb`): EDIT, type pounds; the truck's sticker weight (Eric's: 8,040). Sets the
+  weight floor. 0 uses Ram's published curb weight for the configuration.
 - **Known Extra Load** (`CruiseKnownExtraLb`): 0 to 2,000 lb in 10 lb steps. For a validation drive: the known added
   load (the 250 lb tank, passengers of known weight). **The estimator does not use it** (that would hide its error); it
   is only published as `knownExtraKg`, so that accuracy = estimate − (starting weight + known extra) can be measured.
   Set it back to 0 afterwards.
-- **Weight Estimate**: read-only, the kept estimate and its uncertainty in pounds.
+- **Weight Estimate**: read-only, the kept estimate and its uncertainty in pounds, with the floor applied ("(floor)"
+  when it is at the floor).
 
 sunnylink's settings schema (`openpilot/sunnypilot/sunnylink/settings_ui.json`) does not need entries for these: its
 tests check only the settings it lists, and nothing requires every backed-up setting to be listed.
@@ -295,10 +313,19 @@ been heavier.
 - **Engine torque is real** (see "Signals"), and with the acceleration effect the textbook efficiency 0.85 matches Eric's
   weight; `calibrate.py` fitted 0.850-0.872 on the older drives and 0.852 on the new ones (at 8,180-8,400 lb), rolling
   resistance 0.008-0.009, drag 0.74-0.78. The constants were not changed.
-- Kept estimates now (ESP_4 grade, TC_LOCKED, three-second windows, weight from accelerations), against the 8,180 lb
-  lower bound: 0000073e 8,613 ± 509, 00000742 8,363 ± 537, 00000748 8,481 ± 484, 0000074a 8,431 ± 634, 0000076a
-  8,155 ± 255, 0000076b **7,354 ± 205** (10 percent low, not explained), 00000776 8,372 ± 516, 00000778 7,900 ± 722
-  (short drive), 00000779 8,226 ± 444 lb.
+- **Drive 0000076b** (85 minutes, 87 miles) first came out at 7,354 ± 205 lb. Ruled out against the other eight
+  drives: a reflash (all module part numbers identical), torque reporting (the fuel-rate candidate 0x2A0 gave 28.0 counts
+  per reported kW, like 0000076a's 27.7; torque against EXPECTED_ENGINE_TORQUE, the cruise request and the pedal were
+  normal), gear use and converter lock, and top speed alone (0000076a was faster and fine). Cause: with ESP_4 and the
+  Comma's accelerometer fused, their shared offset drifted (ESP_4's learned offset went from about 0 to -0.066 m/s²),
+  reading every grade about 0.007 too steep; the windows that taught the weight then implied a median of 7,024 lb. The
+  estimate stepped down in the first ten minutes and then stayed. Fix: with ESP_4, the Comma's accelerometer is not
+  used for the grade.
+- Kept estimates now (ESP_4 grade, TC_LOCKED, three-second windows, weight from accelerations), unclamped, against the
+  8,180 lb lower bound: 0000073e 9,751 ± 951, 00000742 9,027 ± 858, 00000748 8,636 ± 653, 0000074a 9,114 ± 902,
+  0000076a 8,588 ± 430, 0000076b 8,046 ± 396, 00000776 9,102 ± 822, 00000778 7,796 ± 908 (short drive), 00000779
+  8,898 ± 697 lb: all within two standard deviations (some drives may have been heavier). With `CruiseEmptyWeightLb`
+  8,040 the floor is 7,821 lb and only 00000778 is held at it.
 
 ## Tests
 

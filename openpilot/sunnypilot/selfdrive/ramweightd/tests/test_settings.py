@@ -14,7 +14,7 @@ class TestSettings(OpenpilotTestCase):
   def test_param_keys(self):
     params = Params()
     for key, kind in (("CruiseBaseWeightLb", ParamKeyType.FLOAT), ("CruiseKnownExtraLb", ParamKeyType.FLOAT),
-                      ("RamWeightGradeState", ParamKeyType.JSON)):
+                      ("CruiseEmptyWeightLb", ParamKeyType.FLOAT), ("RamWeightGradeState", ParamKeyType.JSON)):
       assert params.get_type(key) == kind
     # the option control writes floats, which a FLOAT setting accepts
     for value in S.KNOWN_EXTRA_STEPS.values():
@@ -35,8 +35,12 @@ class TestSettings(OpenpilotTestCase):
       assert S.parse_weight_lb(bad) is None, bad
 
   def test_estimate(self):
-    lb, std = S.estimate_lb({"mass_kg": 3810., "mass_std_kg": 45.})
-    assert abs(lb - 8399.6) < 0.1 and abs(std - 99.2) < 0.1
+    lb, std, at_floor = S.estimate_lb({"mass_kg": 3810., "mass_std_kg": 45.})
+    assert abs(lb - 8399.6) < 0.1 and abs(std - 99.2) < 0.1 and not at_floor
+    # shown with the floor applied, as published
+    lb, std, at_floor = S.estimate_lb({"mass_kg": 3300., "mass_std_kg": 45., "floor_kg": 3547.})
+    assert abs(lb - 3547. / S.LB_TO_KG) < 0.1 and at_floor
+    assert not S.estimate_lb({"mass_kg": 3810., "mass_std_kg": 45., "floor_kg": None})[2]
     for bad in (None, {}, {"mass_kg": "x", "mass_std_kg": 1.}, []):
       assert S.estimate_lb(bad) is None
 
@@ -44,5 +48,6 @@ class TestSettings(OpenpilotTestCase):
     with open(PANEL) as f:
       source = f.read()
     ast.parse(source)
-    for needed in ('"CruiseKnownExtraLb"', '"CruiseBaseWeightLb"', '"RamWeightGradeState"', "RAM_HD_PLATFORM", "set_visible"):
+    for needed in ('"CruiseKnownExtraLb"', '"CruiseBaseWeightLb"', '"CruiseEmptyWeightLb"', '"RamWeightGradeState"', "RAM_HD_PLATFORM",
+                   "set_visible"):
       assert needed in source, needed

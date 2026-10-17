@@ -22,7 +22,9 @@ ESTIMATE_REFRESH_S = 2.
 
 def estimate_text(state) -> str:
   est = estimate_lb(state)
-  return tr("No estimate yet") if est is None else f"{est[0]:,.0f} lb ± {est[1]:,.0f} lb"
+  if est is None:
+    return tr("No estimate yet")
+  return f"{est[0]:,.0f} lb ± {est[1]:,.0f} lb" + (" " + tr("(floor)") if est[2] else "")
 
 
 class ChryslerSettings(BrandSettings):
@@ -33,6 +35,11 @@ class ChryslerSettings(BrandSettings):
       description=tr("Weight of the truck with a full tank, your usual gear and the driver, in pounds. The weight estimator " +
                      "starts from it. 0 uses Ram's published weight for this truck's configuration."),
       callback=self._edit_base_weight)
+    self._empty_weight_item = button_item_sp(
+      tr("Empty Weight"), tr("EDIT"),
+      description=tr("The truck's empty weight from its sticker, in pounds. The weight estimate never goes below it minus " +
+                     "the fuel not in the tank. 0 uses Ram's published curb weight for this truck's configuration."),
+      callback=self._edit_empty_weight)
     self._known_extra_item = option_item_sp(
       tr("Known Extra Load"), "CruiseKnownExtraLb", 0, len(KNOWN_EXTRA_STEPS) - 1,
       description=tr("For a validation drive: load added on top of the starting weight (for example a 250 lb tank and " +
@@ -41,7 +48,7 @@ class ChryslerSettings(BrandSettings):
       value_map=KNOWN_EXTRA_STEPS, label_callback=lambda lb: f"{lb:,.0f} lb")
     self._estimate_item = text_item(tr("Weight Estimate"), self._estimate_value,
                                     description=tr("The weight estimator's last kept estimate and its uncertainty."))
-    self._ram_hd_items = [self._base_weight_item, self._known_extra_item, self._estimate_item]
+    self._ram_hd_items = [self._base_weight_item, self._empty_weight_item, self._known_extra_item, self._estimate_item]
     self.items = list(self._ram_hd_items)
     self._estimate = ""
     self._estimate_time = 0.
@@ -61,30 +68,38 @@ class ChryslerSettings(BrandSettings):
       self._estimate_time = now
     return self._estimate
 
-  def _base_weight_lb(self) -> float:
+  @staticmethod
+  def _weight_setting_lb(key: str) -> float:
     try:
-      return float(ui_state.params.get("CruiseBaseWeightLb", return_default=True) or 0.)
+      return float(ui_state.params.get(key, return_default=True) or 0.)
     except (TypeError, ValueError):
       return 0.
 
-  def _edit_base_weight(self):
-    current = self._base_weight_lb()
-    self._dialog = InputDialogSP(tr("Starting Weight"), tr("Pounds, 0 to 40,000 (0 uses Ram's published weight)"),
-                                 current_text=f"{current:.0f}", callback=self._on_base_weight)
+  def _base_weight_lb(self) -> float:
+    return self._weight_setting_lb("CruiseBaseWeightLb")
+
+  def _edit_weight(self, key: str, title: str):
+    def on_done(result: DialogResult, text: str):
+      if result != DialogResult.CONFIRM:
+        return
+      value = parse_weight_lb(text)
+      if value is not None:
+        ui_state.params.put(key, value)
+    self._dialog = InputDialogSP(title, tr("Pounds, 0 to 40,000 (0 uses Ram's published weight)"),
+                                 current_text=f"{self._weight_setting_lb(key):.0f}", callback=on_done)
     self._dialog.show()
 
-  @staticmethod
-  def _on_base_weight(result: DialogResult, text: str):
-    if result != DialogResult.CONFIRM:
-      return
-    value = parse_weight_lb(text)
-    if value is not None:
-      ui_state.params.put("CruiseBaseWeightLb", value)
+  def _edit_base_weight(self):
+    self._edit_weight("CruiseBaseWeightLb", tr("Starting Weight"))
+
+  def _edit_empty_weight(self):
+    self._edit_weight("CruiseEmptyWeightLb", tr("Empty Weight"))
 
   def update_settings(self):
     visible = self._platform() == RAM_HD_PLATFORM
     for item in self._ram_hd_items:
       item.set_visible(visible)
     if visible:
-      base = self._base_weight_lb()
-      self._base_weight_item.action_item.set_value(f"{base:,.0f} lb" if base > 0. else tr("Published table"))
+      for item, key in ((self._base_weight_item, "CruiseBaseWeightLb"), (self._empty_weight_item, "CruiseEmptyWeightLb")):
+        value = self._weight_setting_lb(key)
+        item.action_item.set_value(f"{value:,.0f} lb" if value > 0. else tr("Published table"))

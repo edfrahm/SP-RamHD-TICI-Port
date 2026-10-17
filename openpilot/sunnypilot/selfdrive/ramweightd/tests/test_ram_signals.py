@@ -220,6 +220,25 @@ class TestRunner(OpenpilotTestCase):
     assert not self.runner(persisted={"garbage": 1}).persisted_used
     assert not self.runner(persisted=None).persisted_used
 
+  def test_weight_floor_is_published_with_the_unclamped_estimate(self):
+    # no floor: the configuration of the synthetic VIN is not identified and the setting is 0
+    r = self.runner()
+    out, t = self.feed(r)
+    rwg = self.message(r, t).ramWeightGrade
+    assert rwg.massFloorKg == 0. and not rwg.atFloor and rwg.massKg == rwg.massUnclampedKg == float(out.mass_kg)
+    # an empty weight above the estimate: massKg is held at the floor, the estimate itself stays visible and unchanged
+    r = self.runner(empty_weight_lb=20000.)
+    out, t = self.feed(r)
+    rwg = self.message(r, t).ramWeightGrade
+    floor_kg = (20000. - r.start.tank_gal * r.start.lb_per_gal) * LB_TO_KG  # fuel level unknown: as if empty
+    assert abs(rwg.massFloorKg - floor_kg) < 0.1 and rwg.atFloor
+    assert abs(rwg.massKg - floor_kg) < 0.1 and abs(rwg.massUnclampedKg - out.mass_kg) < 0.1 and out.mass_kg < floor_kg
+    assert r.estimator.mass_kg == out.mass_kg  # the filter itself is not clamped
+    assert abs(r.state()["floor_kg"] - floor_kg) < 0.1 and r.state()["mass_kg"] < floor_kg
+    # the setting can change during a drive
+    r.set_settings(0., 0., 0.)
+    assert r.floor.mass_kg is None and r.published_mass_kg(1000.) == (1000., False)
+
   def test_settings_change_moves_only_the_reference(self):
     r = self.runner()
     self.feed(r)
