@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "placeholder": true,
+  "note": "PLACEHOLDER, NOT OFFICIAL DATA. This file only shows the layout. It will be replaced by the table built from Stellantis's official Ram Heavy Duty specification documents (edfrahm/SP-RamHD-TICI-Port#8). Until then no curb weight is known, so the estimator starts from the CruiseBaseWeightLb setting, or from the platform's weight in CarParams.",
+  "retrieved": null,
+  "sources": [
+    {
+      "id": "eric-issue-8",
+      "title": "Eric's truck configuration, from Eric (edfrahm/SP-RamHD-TICI-Port#8 comments, 2026-10-17)",
+      "url": "https://github.com/edfrahm/SP-RamHD-TICI-Port/issues/8"
+    }
+  ],
+  "diesel_lb_per_gal": 7.1,
+  "gasoline_lb_per_gal": 6.0,
+  "configs": [
+    {
+      "model_year": 2022,
+      "series": "2500",
+      "rear_wheels": "single",
+      "cab": "crew",
+      "bed": "short",
+      "bed_length_in": 76.3,
+      "drive": "4x4",
+      "engine": "cummins_so",
+      "transmission": "68RFE",
+      "curb_weight_lb": null,
+      "curb_weight_kind": "base",
+      "fuel_tank_gal": null,
+      "source": "eric-issue-8",
+      "notes": "PLACEHOLDER: Eric's configuration (four-wheel drive still to confirm from the VIN). Curb weight and tank size to be filled from the official specification."
+    }
+  ],
+  "vin": {
+    "model_year_codes": {"K": 2019, "L": 2020, "M": 2021, "N": 2022, "P": 2023, "R": 2024},
+    "rules": []
+  },
+  "engine_parts": [],
+  "transmission_parts": []
+}
