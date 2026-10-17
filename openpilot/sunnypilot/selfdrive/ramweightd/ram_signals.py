@@ -23,7 +23,7 @@ BUS_CAMERA = 2  # the factory windshield unit (camera and cruise computer) side 
 # How sure we are of each signal
 KNOWN = "known"      # in the Ram Heavy Duty database and read by openpilot or seen in Eric's drives
 UNCHECKED = "unchecked"  # in the shared database, but not yet checked on this truck
-PENDING = "pending"  # proposed by the community developer realfast (2023); not in the database until #5 verifies it
+PENDING = "pending"  # proposed but not in the database until #5 verifies it
 MISSING = "missing"  # not found on the bus yet (#5); no message to read
 
 
@@ -57,18 +57,21 @@ RAM_SIGNALS: dict[str, SignalSpec] = {
   "acc_active": SignalSpec("DAS_3", "ACC_ACTIVE", BUS_CAMERA, KNOWN),
   "acc_torque_request_nm": SignalSpec("DAS_3", "ENGINE_TORQUE_REQUEST", BUS_CAMERA, KNOWN),
 
-  # transmission (TRANS_SPEED, 0x144): pending verification in #5
-  "converter_locked": SignalSpec("TRANS_SPEED", "TC_LOCKED", BUS_TRUCK, PENDING),
-  "gear_actual": SignalSpec("TRANS_SPEED", "ACTUAL_GEAR", BUS_TRUCK, PENDING),
-  "gear_desired": SignalSpec("TRANS_SPEED", "DESIRED_GEAR", BUS_TRUCK, PENDING),
-  "shift_pending": SignalSpec("TRANS_SPEED", "SHIFT_PENDING", BUS_TRUCK, PENDING),
-  "trans_input_rpm": SignalSpec("TRANS_SPEED", "INPUT_SPEED", BUS_TRUCK, PENDING),
-  "trans_output_rpm": SignalSpec("TRANS_SPEED", "OUTPUT_SPEED", BUS_TRUCK, PENDING),
+  # transmission computer (TCM_1, 0x144), verified in #5: converter locked when engine speed equals INPUT_SPEED
+  "converter_locked": SignalSpec("TCM_1", "TC_LOCKED", BUS_TRUCK, KNOWN),
+  "gear_code_actual": SignalSpec("TCM_1", "ACTUAL_GEAR", BUS_TRUCK, KNOWN),    # a code: see TCM_1_GEARS
+  "gear_code_desired": SignalSpec("TCM_1", "DESIRED_GEAR", BUS_TRUCK, KNOWN),
+  "trans_input_rpm": SignalSpec("TCM_1", "INPUT_SPEED", BUS_TRUCK, KNOWN),
+  "trans_output_rpm": SignalSpec("TCM_1", "OUTPUT_SPEED", BUS_TRUCK, KNOWN),
+  # no shift-pending signal (never set in 549 shifts in #5): a shift is the desired gear differing from the actual one,
+  # or the actual gear changing (see shift_in_progress)
 
-  # stability-control sensor (ESP_4, 0x14C): fore-and-aft acceleration in steps of 0.08 m/s2, pending in #5
-  "stability_accel_mps2": SignalSpec("ESP_4", "Acceleration", BUS_TRUCK, PENDING),
+  # stability-control sensor (ESP_4, 0x14C), verified in #5: fore-and-aft acceleration in steps of 0.08 m/s2
+  "stability_accel_mps2": SignalSpec("ESP_4", "Acceleration", BUS_TRUCK, KNOWN),
 
-  # not found on the bus yet (#5)
+  # not found or not verified yet (#5); hooks only. Candidates seen but not verified, not used:
+  # fuel level 0x310 byte 1 (8|8@1, scale unsettled), range to empty 0x30E 1|10@0 (likely km),
+  # fuel rate 0x2A0 36|13@0 (likely 0.01 L/h per count), odometer 0x310 39|24@0 (0.1 km).
   "exhaust_brake_on": SignalSpec(None, "", BUS_TRUCK, MISSING),
   "tow_haul_on": SignalSpec(None, "", BUS_TRUCK, MISSING),
   "trailer_connected": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=2.0),
@@ -83,10 +86,10 @@ RAM_SIGNALS: dict[str, SignalSpec] = {
 PUBLISHED_FIELDS: dict[str, tuple[str, ...]] = {
   "engineRpm": ("engine_rpm",),
   "engineTorqueNm": ("engine_torque_nm",),
-  "gearActual": ("gear_actual",),
-  "gearDesired": ("gear_desired",),
+  "gearActual": ("gear_code_actual",),
+  "gearDesired": ("gear_code_desired",),
   "converterLocked": ("converter_locked",),
-  "shiftPending": ("shift_pending",),
+  "shiftPending": ("gear_code_actual", "gear_code_desired"),  # derived from the two gears (no shift-pending signal)
   "transInputRpm": ("trans_input_rpm",),
   "transOutputRpm": ("trans_output_rpm",),
   "exhaustBrakeOn": ("exhaust_brake_on",),
@@ -96,6 +99,17 @@ PUBLISHED_FIELDS: dict[str, tuple[str, ...]] = {
   # serviceBrakeOn is filled from either brake signal; it is listed when at least one of them is available
 }
 SERVICE_BRAKE_SIGNALS = ("brake_pedal", "brake_pressure")
+
+# TCM_1 gear codes -> gear (68RFE: 3.23, 1.84, 1.41, 1.00, 0.82, 0.63; axle 3.73), measured in #5.
+# 0 and 11: stopped, park or reverse; anything else unknown. Published as 0.
+TCM_1_GEARS = {1: 1, 2: 2, 9: 3, 3: 4, 4: 5, 5: 6}
+
+
+def gear_from_code(code: float | None) -> int | None:
+  """The gear (1-6) for a TCM_1 gear code, 0 for stopped/park/reverse/unknown, None when the signal is unavailable."""
+  if code is None:
+    return None
+  return TCM_1_GEARS.get(int(round(code)), 0)
 
 
 class RamSignalReader:

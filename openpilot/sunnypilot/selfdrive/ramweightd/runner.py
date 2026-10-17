@@ -8,6 +8,8 @@ processed exactly as on the truck. Inputs:
 - deviceMotion: openpilot's location filter (locationd); its orientation is the Comma's pose in the world
 - extrinsicsCalibration: the Comma's mounting angles in the truck (calibrationd), used to turn that pose into the
   truck's pitch (the same PoseCalibrator controlsd uses)
+- accelerometer: the Comma's own accelerometer (about 104 per second), averaged over each tenth of a second and turned
+  into the truck's frame with the same mounting angles; its forward axis reads acceleration plus gravity along the slope
 """
 import math
 
@@ -15,12 +17,13 @@ from opendbc.car import Bus
 from opendbc.car.chrysler.values import DBC
 from openpilot.selfdrive.locationd.helpers import Pose, PoseCalibrator
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import Inputs, LB_TO_KG, Output, WeightGradeEstimator, valid_persisted_state
-from openpilot.sunnypilot.selfdrive.ramweightd.ram_signals import RamSignalReader
+from openpilot.sunnypilot.selfdrive.ramweightd.ram_signals import RamSignalReader, gear_from_code
 from openpilot.sunnypilot.selfdrive.ramweightd.settings import RAM_HD_PLATFORM
 from openpilot.sunnypilot.selfdrive.ramweightd.start_weight import (UNKNOWN_FUEL_FRACTION, Configuration, StartWeight, WeightTable,
                                                                     choose_start_weight, identify_configuration, load_weight_table)
 
 RAM_HD_BRAND = "chrysler"
+SHIFT_SETTLE_S = 1.0  # after the actual gear changes, the shift counts as in progress this long
 STEP_HZ = 10.
 STEP_NANOS = int(1e9 / STEP_HZ)
 ESTIMATE_FIELDS = ["massKg", "massStdKg", "dragNPerMps2"]
@@ -58,6 +61,12 @@ class WeightGradeRunner:
                                           start_fuel_level_pct=assumed_level)
 
     self.calibrator = PoseCalibrator()
+    self.accel_sum = [0., 0., 0.]
+    self.accel_count = 0
+    self.last_gear: int | None = None
+    self.gear_change_t = -1e9
+    self.gear: int | None = None
+    self.gear_desired: int | None = None
     self.car_state = None
     self.device_motion = None
     self.device_motion_valid = False
@@ -90,6 +99,18 @@ class WeightGradeRunner:
   def handle_extrinsics(self, extrinsics) -> None:
     self.calibrator.feed_extrinsics_calibration(extrinsics)
 
+  def handle_accelerometer(self, accelerometer) -> None:
+    if accelerometer.which() != "acceleration":
+      return
+    v = accelerometer.acceleration.v
+    if len(v) != 3:
+      return
+    # the sensor's axes to the Comma's device frame (forward, right, down), exactly as openpilot's locationd reads it
+    self.accel_sum[0] -= v[2]
+    self.accel_sum[1] -= v[1]
+    self.accel_sum[2] -= v[0]
+    self.accel_count += 1
+
   def handle(self, which: str, msg, valid: bool = True) -> None:
     """msg is the message body (for example evt.carState), except for can, which takes the whole event."""
     if which == "can":
@@ -100,6 +121,8 @@ class WeightGradeRunner:
       self.handle_device_motion(msg, valid)
     elif which == "extrinsicsCalibration":
       self.handle_extrinsics(msg)
+    elif which == "accelerometer":
+      self.handle_accelerometer(msg)
 
   # ---- one 10 Hz step ----
   def inputs(self, now_nanos: int) -> Inputs:
@@ -112,6 +135,24 @@ class WeightGradeRunner:
     v = float(cs.vEgoRaw) if cs is not None else 0.
     rl, rr = get("wheel_rpm_rl"), get("wheel_rpm_rr")
     rear = 0.5 * (rl + rr) if rl is not None and rr is not None else None
+
+    # gears and shifts (TCM_1): a shift is the desired gear differing from the actual one, or the actual gear having
+    # changed within SHIFT_SETTLE_S
+    gear, desired = gear_from_code(get("gear_code_actual")), gear_from_code(get("gear_code_desired"))
+    t = now_nanos * 1e-9
+    shift = None
+    if gear is not None and desired is not None:
+      if self.last_gear is not None and gear != self.last_gear:
+        self.gear_change_t = t
+      self.last_gear = gear
+      shift = gear != desired or t - self.gear_change_t < SHIFT_SETTLE_S
+    self.gear, self.gear_desired = gear, desired
+
+    comma_accel = None
+    if self.accel_count > 0 and self.calibrator.calib_valid:
+      n = self.accel_count
+      c = self.calibrator.calib_from_device
+      comma_accel = float(c[0][0] * self.accel_sum[0] / n + c[0][1] * self.accel_sum[1] / n + c[0][2] * self.accel_sum[2] / n)
 
     pitch = pitch_std = lateral = None
     if self.device_motion is not None and self.device_motion_valid and self.calibrator.calib_valid:
@@ -135,8 +176,9 @@ class WeightGradeRunner:
       rear_wheel_rpm=rear,
       traction_control=_bool(get("traction_control_active")),
       stability_accel=get("stability_accel_mps2"),
+      comma_accel=comma_accel,
       converter_locked=_bool(get("converter_locked")),
-      shift_pending=_bool(get("shift_pending")),
+      shift_pending=shift,
       exhaust_brake=_bool(get("exhaust_brake_on")),
       trailer_connected=_bool(get("trailer_connected")),
       fuel_level_pct=get("fuel_level_pct"),
@@ -153,6 +195,8 @@ class WeightGradeRunner:
       self.tank_gal_reported = tank
       self.start = self._choose_start(self.estimator.fuel.first_level_pct)
       self.estimator.fuel.set_tank(self.start.tank_gal, self.start.lb_per_gal)
+    self.accel_sum = [0., 0., 0.]
+    self.accel_count = 0
     first_level = self.estimator.fuel.first_level_pct
     out = self.estimator.step(inp)
     if first_level is None and self.estimator.fuel.first_level_pct is not None and self.start.source != "fallback":
@@ -188,8 +232,8 @@ class WeightGradeRunner:
 
     rwg.engineRpm = float(num("engine_rpm"))
     rwg.engineTorqueNm = float(num("engine_torque_nm"))
-    rwg.gearActual = int(num("gear_actual"))
-    rwg.gearDesired = int(num("gear_desired"))
+    rwg.gearActual = self.gear or 0
+    rwg.gearDesired = self.gear_desired or 0
     rwg.converterLocked = bool(out.converter_locked)
     rwg.shiftPending = bool(inp.shift_pending)
     rwg.transInputRpm = float(num("trans_input_rpm"))
@@ -210,6 +254,7 @@ class WeightGradeRunner:
     rwg.massDragCorrelation = float(corr) if math.isfinite(corr) else 0.
     rwg.notCleanReasons = out.not_clean_reasons
     rwg.stabilitySensorOffsetMps2 = float(out.sensor_offset)
+    rwg.commaAccelOffsetMps2 = float(out.comma_offset)
 
   def available_fields(self, now_nanos: int) -> list[str]:
     """availableSignals: the ramWeightGrade fields the shared upload (#9) may write. The estimates are listed once the

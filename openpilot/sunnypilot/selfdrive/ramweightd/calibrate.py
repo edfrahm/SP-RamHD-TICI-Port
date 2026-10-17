@@ -7,7 +7,7 @@ Fit the weight estimator's constants from calibration drives with a known combin
 Each route is one drive; give the combined weight at the start of the drives (truck, people, load, fuel). Drive
 varied speeds and grades with strong accelerations and long climbs, and do not refuel during a drive.
 
-It replays the drives exactly like replay.py, collects every clean one-second window, and fits by least squares
+It replays the drives exactly like replay.py, collects every clean window (three seconds), and fits by least squares
 (trimming outliers beyond three standard deviations, repeatedly), with the weight known:
   efficiency * engine force - rolling resistance * m*g*cos(grade) - c * speed^2 + body pitch * m*g*a
       = (m + rotating parts) * a + m*g*sine(grade)
@@ -29,7 +29,7 @@ from openpilot.sunnypilot.selfdrive.ramweightd import estimator as est
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import G, LB_TO_KG, ROTATING_MASS_KG, Window
 from openpilot.sunnypilot.selfdrive.ramweightd.replay import add_estimator_arguments, find_log_files, replay, runner_factory
 
-MIN_WINDOWS = 200
+MIN_WINDOWS = 100  # about five minutes of clean driving in three-second windows
 NAMES = ("EFFICIENCY", "ROLLING_RESISTANCE", "air drag c", "BODY_PITCH_PER_ACCEL")
 
 
@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     # fuel burned since the start of the drive (no refueling during calibration drives)
     drive = [(w, offset) for w, offset, _ in runner.estimator.windows]
     windows += drive
-    print(f"{item}: {len(files)} file(s), {len(drive)} clean one-second windows")
+    print(f"{item}: {len(files)} file(s), {len(drive)} clean windows of {est.WINDOW_SAMPLES / 10:.0f} s")
 
   if len(windows) < MIN_WINDOWS:
     print(f"only {len(windows)} clean windows: need at least {MIN_WINDOWS}. Drive longer, with more varied speeds and grades.")

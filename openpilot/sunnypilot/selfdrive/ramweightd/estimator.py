@@ -90,10 +90,13 @@ RATIO_TOLERANCE = 0.01
 # ---------------------------------------------------------------------------------------------------------------------
 # Weight updates
 # ---------------------------------------------------------------------------------------------------------------------
-# Both sides of the force equation are averaged over the same one-second window of clean samples (ten samples), so
+# Both sides of the force equation are averaged over the same three-second window of clean samples (30 samples), so
 # their timing matches exactly; the acceleration over the window is the speed change divided by the window length.
-# Windows do not overlap, so their errors are close to independent.
-WINDOW_SAMPLES = 10
+# Windows do not overlap, so their errors are close to independent. One second was too short on Eric's drives: the
+# speed and ESP_4 readings are steps of 0.002 m/s and 0.08 m/s2, and their noise over one second diluted the fit
+# (estimates 5-15 percent low, with uncertainties far too small); three seconds brought eight of nine drives inside
+# Eric's 8,180-8,400 lb.
+WINDOW_SAMPLES = 30
 FORCE_NOISE_N = 200.       # wind gusts, road roughness, signal steps
 FORCE_REL_NOISE = 0.03     # error of the engine torque signal, as a share of the driving force
 ACCEL_NOISE_MPS2 = 0.03    # error of the window's acceleration from wheel speed
@@ -127,23 +130,38 @@ GRADE_VAR_PER_M = 4e-6          # grade can change about 0.02 per 100 m driven (
 GRADE_VAR_PER_S = 1e-7
 SENSOR_OFFSET_VAR_PER_S = 1e-6
 GRADE_INIT_STD = 0.05
-SENSOR_OFFSET_INIT_STD = 0.3    # meters per second squared: a mounting tilt of up to about 2 degrees
+# ESP_4's own offset: on Eric's nine drives its grade averaged -0.001 to -0.005 (about zero), so a small uncertainty
+SENSOR_OFFSET_INIT_STD = 0.03   # meters per second squared (0.003 in grade)
 SENSOR_NOISE_MPS2 = 0.06        # steps of 0.08 m/s2, body bounce
 SENSOR_NOISE_PER_ACCEL = 0.05   # the body pitches when speeding up or braking, tilting the sensor
 SENSOR_GATE_SIGMA = 5.0
 SENSOR_WARMUP_SAMPLES = 10
 PITCH_NOISE_FLOOR = 0.004       # mounting and body-pitch error left after the Comma's calibration
 PITCH_CORRELATION = 4.          # the Comma's pitch is itself a filtered estimate: successive samples share errors
-# Without the stability sensor, never claim a grade better than this. On Eric's first three drives (2026-10-16) the
-# Comma's pitch disagreed with the grade implied by the engine force by about 0.015-0.018 (rise over run, rms), and
-# its grade changes were about 2.5 times larger than the engine force followed (a ratio that does not depend on the
-# unknown weight or efficiency); the cause is not known yet (no GPS fix, stability sensor pending in #5).
+# The Comma's own accelerometer, turned into the truck's frame with the calibration, minus wheel-speed acceleration
+# gives g * sine(grade) + an offset, the same principle as the stability sensor. On Eric's nine drives (291 minutes,
+# two software versions) it agreed with ESP_4 (correlation 0.88-0.95, slope 0.91-1.06), while the Comma's pitch
+# (openpilot's location filter) did not (correlation 0.01-0.80; the pitch carries errors about as large as the grade
+# itself, so fits against it shrink toward a third). So whenever an accelerometer is available, the pitch is not used.
+# Compared with ESP_4, the Comma's accelerometer reads +0.13 to +0.19 m/s2 higher (mean 0.16: accelerometer bias plus
+# what the calibration leaves of the mounting tilt) and tilts a further 0.0027-0.0046 rad nose-up per m/s2 of
+# acceleration (mean 0.0038: the cab and windshield pitching on the body mounts). Another Comma or mounting may differ;
+# with ESP_4 present the offset is learned against it.
+COMMA_ACCEL_OFFSET_MPS2 = 0.16
+COMMA_ACCEL_OFFSET_STD = 0.04
+COMMA_TILT_PER_ACCEL = 0.0038
+# Even with ESP_4, the engine force followed only about 0.83 of the measured grade on Eric's nine drives (against
+# 1.0 for the acceleration, which gave 8,080-8,230 lb with EFFICIENCY 0.85, inside Eric's 8,180-8,400 lb): a
+# grade-proportional error of about 0.2 of the grade read. It is counted in the grade's uncertainty.
+ACCEL_GRADE_REL_ERROR = 0.2
+COMMA_ACCEL_OFFSET_VAR_PER_S = 1e-8
+COMMA_ACCEL_NOISE_MPS2 = 0.05
+COMMA_ACCEL_SANITY_MPS2 = 30.
+# Without any accelerometer, never claim a grade better than this: on Eric's drives the Comma's pitch disagreed with
+# the grade implied by the engine force by about 0.015-0.018 (rms), and its error grows with the grade it reads.
 PITCH_ONLY_STD_FLOOR = 0.015
-PITCH_ONLY_REL_ERROR = 0.6  # ... and its error grows with the grade it reads (the force followed only about 0.4 of it)
-# Multiplies the sine of the Comma's pitch before use. 1.0 trusts it. On Eric's drives of 2026-10-16, calibrate.py
-# --fit-grade-scale found 0.33 (with the unconfirmed 8,400 lb, and textbook values for everything else); not applied
-# until the cause is understood (#5 stability sensor, or a drive with a GPS fix).
-PITCH_GRADE_SCALE = 1.0
+PITCH_ONLY_REL_ERROR = 0.6
+MAX_PLAUSIBLE_PITCH = 0.15  # radians; older software logged nonsense pitch (down to -61 degrees): skipped
 MAX_SINE_GRADE = 0.37           # rise over run 0.4
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -194,98 +212,107 @@ class LowPass:
     self.elapsed = 0.
 
 
-def _kf_update(x: list[float], P: list[list[float]], H: tuple[float, float], z: float, R: float,
-               gate_sigma: float | None = None) -> tuple[bool, float]:
-  """One measurement update of a two-state Kalman filter, in place. Returns (accepted, innovation in sigmas)."""
-  ph0 = P[0][0] * H[0] + P[0][1] * H[1]
-  ph1 = P[1][0] * H[0] + P[1][1] * H[1]
-  S = H[0] * ph0 + H[1] * ph1 + R
-  innovation = z - (H[0] * x[0] + H[1] * x[1])
+def _kf_update(x: list[float], P: list[list[float]], H, z: float, R: float, gate_sigma: float | None = None) -> tuple[bool, float]:
+  """One measurement update of a small Kalman filter, in place. Returns (accepted, innovation in sigmas)."""
+  n = len(x)
+  ph = [sum(P[i][j] * H[j] for j in range(n)) for i in range(n)]
+  S = sum(H[i] * ph[i] for i in range(n)) + R
+  innovation = z - sum(H[i] * x[i] for i in range(n))
   sigmas = abs(innovation) / math.sqrt(S)
   if gate_sigma is not None and sigmas > gate_sigma:
     return False, sigmas
-  k0, k1 = ph0 / S, ph1 / S
-  x[0] += k0 * innovation
-  x[1] += k1 * innovation
-  P[0][0] -= k0 * ph0
-  P[0][1] -= k0 * ph1
-  P[1][0] -= k1 * ph0
-  P[1][1] -= k1 * ph1
+  k = [ph[i] / S for i in range(n)]
+  for i in range(n):
+    x[i] += k[i] * innovation
+    for j in range(n):
+      P[i][j] -= k[i] * ph[j]
   # keep the covariance symmetric and positive
-  P[0][1] = P[1][0] = 0.5 * (P[0][1] + P[1][0])
-  P[0][0] = max(P[0][0], 1e-12)
-  P[1][1] = max(P[1][1], 1e-12)
+  for i in range(n):
+    for j in range(i):
+      P[i][j] = P[j][i] = 0.5 * (P[i][j] + P[j][i])
+    P[i][i] = max(P[i][i], 1e-12)
   return True, sigmas
 
 
 class GradeFilter:
-  """Two-state Kalman filter for the road grade.
+  """Kalman filter for the road grade.
 
-  States: the sine of the grade angle, and the offset of the stability-control sensor's acceleration reading.
-  Measurements:
-  - stability sensor: the sensor feels acceleration plus gravity along the slope, wheel speed gives the acceleration
-    alone, so (sensor acceleration - wheel-speed acceleration) = g * sine(grade) + offset. Both are smoothed by the
-    same low-pass filter so their timing matches.
-  - the Comma's pitch: the calibrated pitch of the road ahead from openpilot's location filter (deviceMotion
-    orientation, turned into the truck's frame with extrinsicsCalibration's mounting angles).
-  With both, the Comma's pitch fixes the slow offset and the sensor follows quick changes. Without the sensor, the
-  Comma's pitch is used alone and the published uncertainty is never below PITCH_ONLY_STD_FLOOR.
+  States: the sine of the grade angle, the offset of the stability-control sensor's acceleration reading, and the
+  offset of the Comma's accelerometer. Measurements:
+  - stability sensor (ESP_4) and the Comma's accelerometer: each feels acceleration plus gravity along the
+    slope; wheel speed gives the acceleration alone, so (accelerometer - wheel-speed acceleration) = g * sine(grade)
+    + offset. Both sides are smoothed by the same low-pass filter so their timing matches.
+    ESP_4 (verified in #5) is the primary one; the Comma's accelerometer is corrected for its offset and its extra
+    tilt (COMMA_ACCEL_OFFSET_MPS2, COMMA_TILT_PER_ACCEL).
+  - the Comma's pitch (deviceMotion orientation turned into the truck's frame with extrinsicsCalibration), used only
+    when no accelerometer is available and the pitch is plausible; then the published uncertainty is wide.
   """
 
-  def __init__(self, body_pitch_per_accel: float = BODY_PITCH_PER_ACCEL, pitch_grade_scale: float = PITCH_GRADE_SCALE):
+  def __init__(self, body_pitch_per_accel: float = BODY_PITCH_PER_ACCEL):
     self.body_pitch_per_accel = body_pitch_per_accel
-    self.pitch_grade_scale = pitch_grade_scale
-    self.x = [0., 0.]  # sine of grade, sensor offset (m/s2)
-    self.P = [[GRADE_INIT_STD ** 2, 0.], [0., SENSOR_OFFSET_INIT_STD ** 2]]
+    self.x = [0., 0., COMMA_ACCEL_OFFSET_MPS2]  # sine of grade, stability sensor offset, Comma accelerometer offset (m/s2)
+    self.P = [[GRADE_INIT_STD ** 2, 0., 0.], [0., SENSOR_OFFSET_INIT_STD ** 2, 0.], [0., 0., COMMA_ACCEL_OFFSET_STD ** 2]]
     self.v_lpf = LowPass(GRADE_LPF_S)
     self.sensor_lpf = LowPass(GRADE_LPF_S)
+    self.comma_lpf = LowPass(GRADE_LPF_S)
     self.prev_v_f: float | None = None
     self.sensor_samples = 0
+    self.comma_samples = 0
     self.wheel_accel = 0.
     self.source = "none"
-    self.last_sensor_used = False
-    self.last_pitch_used = False
 
   def reset_smoothing(self) -> None:
     self.v_lpf.reset()
     self.sensor_lpf.reset()
+    self.comma_lpf.reset()
     self.prev_v_f = None
     self.sensor_samples = 0
+    self.comma_samples = 0
 
-  def step(self, dt: float, v: float, sensor_accel: float | None, pitch: float | None, pitch_std: float | None) -> None:
-    # predict: grade drifts with distance driven, the sensor offset barely at all
+  def _accelerometer(self, lpf: LowPass, samples: int, accel: float | None, dt: float, H, noise: float, tilt: float):
+    """Returns (used, samples)."""
+    if accel is None:
+      lpf.reset()
+      return False, 0
+    a_f = lpf.update(accel, dt)
+    samples += 1
+    if samples <= SENSOR_WARMUP_SAMPLES:
+      return False, samples
+    R = (noise + SENSOR_NOISE_PER_ACCEL * abs(self.wheel_accel)) ** 2
+    used, _ = _kf_update(self.x, self.P, H, a_f - self.wheel_accel - G * tilt, R, SENSOR_GATE_SIGMA)
+    return used, samples
+
+  def step(self, dt: float, v: float, sensor_accel: float | None, pitch: float | None, pitch_std: float | None,
+           comma_accel: float | None = None) -> None:
+    # predict: grade drifts with distance driven, the offsets barely at all
     self.P[0][0] += GRADE_VAR_PER_M * abs(v) * dt + GRADE_VAR_PER_S * dt
     self.P[1][1] += SENSOR_OFFSET_VAR_PER_S * dt
+    self.P[2][2] += COMMA_ACCEL_OFFSET_VAR_PER_S * dt
 
     v_f = self.v_lpf.update(v, dt)
     self.wheel_accel = 0. if self.prev_v_f is None else (v_f - self.prev_v_f) / dt
     self.prev_v_f = v_f
+    body_pitch = self.body_pitch_per_accel * self.wheel_accel  # the body tilts both accelerometers and the Comma
 
-    body_pitch = self.body_pitch_per_accel * self.wheel_accel
-    used_sensor = False
-    if sensor_accel is not None:
-      a_f = self.sensor_lpf.update(sensor_accel, dt)
-      self.sensor_samples += 1
-      if self.sensor_samples > SENSOR_WARMUP_SAMPLES:
-        R = (SENSOR_NOISE_MPS2 + SENSOR_NOISE_PER_ACCEL * abs(self.wheel_accel)) ** 2
-        z = a_f - self.wheel_accel - G * body_pitch
-        used_sensor, _ = _kf_update(self.x, self.P, (G, 1.), z, R, SENSOR_GATE_SIGMA)
-    else:
-      self.sensor_lpf.reset()
-      self.sensor_samples = 0
+    used_sensor, self.sensor_samples = self._accelerometer(self.sensor_lpf, self.sensor_samples, sensor_accel, dt, (G, 1., 0.),
+                                                           SENSOR_NOISE_MPS2, body_pitch)
+    if comma_accel is not None and not (abs(comma_accel) < COMMA_ACCEL_SANITY_MPS2):
+      comma_accel = None
+    used_comma, self.comma_samples = self._accelerometer(self.comma_lpf, self.comma_samples, comma_accel, dt, (G, 0., 1.),
+                                                         COMMA_ACCEL_NOISE_MPS2, body_pitch + COMMA_TILT_PER_ACCEL * self.wheel_accel)
 
     used_pitch = False
-    if pitch is not None and math.isfinite(pitch):
+    accelerometer = sensor_accel is not None or comma_accel is not None
+    if not accelerometer and pitch is not None and math.isfinite(pitch) and abs(pitch) < MAX_PLAUSIBLE_PITCH:
       sd = max(pitch_std if (pitch_std is not None and math.isfinite(pitch_std)) else 0., 0.002)
       R = (sd ** 2 + PITCH_NOISE_FLOOR ** 2) * PITCH_CORRELATION
-      used_pitch, _ = _kf_update(self.x, self.P, (1., 0.), self.pitch_grade_scale * math.sin(pitch - body_pitch), R)
+      used_pitch, _ = _kf_update(self.x, self.P, (1., 0., 0.), math.sin(pitch - body_pitch), R)
 
     self.x[0] = min(max(self.x[0], -MAX_SINE_GRADE), MAX_SINE_GRADE)
-    self.last_sensor_used, self.last_pitch_used = used_sensor, used_pitch
-    if used_sensor and used_pitch:
-      self.source = "sensorAndPitch"
-    elif used_sensor:
-      self.source = "sensorOnly"
+    if used_sensor:
+      self.source = "sensorAndPitch" if used_pitch else "sensorOnly"
+    elif used_comma:
+      self.source = "commaAccelerometer"
     elif used_pitch:
       self.source = "pitchOnly"
     # else keep the last source (a sample without measurements only predicts)
@@ -299,6 +326,8 @@ class GradeFilter:
     std = math.sqrt(self.P[0][0])
     if self.source == "pitchOnly":
       std = max(std, math.hypot(PITCH_ONLY_STD_FLOOR, PITCH_ONLY_REL_ERROR * self.x[0]))
+    else:
+      std = math.hypot(std, ACCEL_GRADE_REL_ERROR * self.x[0])
     return std
 
   @property
@@ -314,6 +343,10 @@ class GradeFilter:
   @property
   def sensor_offset(self) -> float:
     return self.x[1]
+
+  @property
+  def comma_offset(self) -> float:
+    return self.x[2]
 
 
 class RatioSteadiness:
@@ -368,8 +401,9 @@ class Inputs:
   rear_wheel_rpm: float | None = None        # ESP_6, average of the two rear wheels
   traction_control: bool | None = None       # ESP_2 TCS_ACTIVE
   stability_accel: float | None = None       # ESP_4 (pending #5)
-  converter_locked: bool | None = None       # TRANS_SPEED (pending #5)
-  shift_pending: bool | None = None          # TRANS_SPEED (pending #5)
+  comma_accel: float | None = None           # the Comma's accelerometer, forward axis of the truck, m/s2 (specific force)
+  converter_locked: bool | None = None       # TCM_1 TC_LOCKED
+  shift_pending: bool | None = None          # from TCM_1: desired gear differs from the actual one, or it just changed
   exhaust_brake: bool | None = None          # not found yet (#5)
   trailer_connected: bool | None = None      # not found yet (#5)
   fuel_level_pct: float | None = None        # not found yet (#5)
@@ -496,7 +530,7 @@ class WindowSample:
 
 @dataclass
 class Window:
-  """One second of clean samples, averaged. Inputs to one weight update (and to calibrate.py)."""
+  """Three seconds of clean samples, averaged. Inputs to one weight update (and to calibrate.py)."""
   t: float
   duration: float
   v_mean: float
@@ -563,7 +597,7 @@ def window_measurement(w: Window, fuel_offset_kg: float, mass_guess_kg: float, m
   R = FORCE_NOISE_N ** 2 + (FORCE_REL_NOISE * force) ** 2 + (mass_guess_kg * ACCEL_NOISE_MPS2) ** 2 + \
       GRADE_ERROR_CORRELATION * (mass_guess_kg * G * w.grade_std) ** 2
   noise_width = math.hypot(ACCEL_NOISE_MPS2, G * w.grade_std)
-  if abs(w.accel if w.pitch_only else excitation) < EXCITATION_SIGMAS * noise_width:
+  if abs(w.accel) < EXCITATION_SIGMAS * noise_width:
     z -= (mass_guess_kg - fuel_offset_kg) * excitation
     R += mass_var * excitation ** 2
     return (h_level, w.v2), z, R, False
@@ -646,6 +680,7 @@ class Output:
   grade_std: float
   sensor_offset: float
   grade_source: str
+  comma_offset: float
   clean: bool
   not_clean_reasons: list[str]
   clean_samples: int
@@ -745,7 +780,7 @@ class WeightGradeEstimator:
       self.prev_trailer = inp.trailer_connected
 
     # grade
-    self.grade.step(dt, inp.v, inp.stability_accel, inp.pitch, inp.pitch_std)
+    self.grade.step(dt, inp.v, inp.stability_accel, inp.pitch, inp.pitch_std, inp.comma_accel)
 
     # fuel
     added_kg = self.fuel.step(dt, inp.fuel_level_pct, moving, self.stopped_s)
@@ -800,6 +835,7 @@ class WeightGradeEstimator:
       grade_std=self.grade.grade_std,
       sensor_offset=self.grade.sensor_offset,
       grade_source=self.grade.source,
+      comma_offset=self.grade.comma_offset,
       clean=clean,
       not_clean_reasons=reasons,
       clean_samples=self.clean_samples,

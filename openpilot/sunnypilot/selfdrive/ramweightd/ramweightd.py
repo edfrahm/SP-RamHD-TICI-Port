@@ -65,6 +65,7 @@ def main() -> None:
   pm = messaging.PubMaster(["ramWeightGrade"])
   sm = messaging.SubMaster(["carState", "deviceMotion", "extrinsicsCalibration"])
   can_sock = messaging.sub_sock("can")
+  accel_sock = messaging.sub_sock("accelerometer")
   rk = Ratekeeper(STEP_HZ, print_delay_threshold=None)
   last_settings = last_save = time.monotonic()
 
@@ -73,6 +74,8 @@ def main() -> None:
       for raw in messaging.drain_sock_raw(can_sock):
         with log.Event.from_bytes(raw, traversal_limit_in_words=messaging.NO_TRAVERSAL_LIMIT) as evt:
           runner.handle_can_events([evt])
+      for evt in messaging.drain_sock(accel_sock):
+        runner.handle_accelerometer(evt.accelerometer)
       sm.update(0)
       if sm.updated["carState"]:
         runner.handle_car_state(sm["carState"])

@@ -544,7 +544,7 @@ struct RamWeightGrade @0xa4f1eb3323f5f582 {
   converterLockRule @28 :ConverterLockRule;
   # which measurements the road grade came from
   gradeSource @29 :GradeSource;
-  # one-second weight updates accepted this drive, and rejected as outliers
+  # weight updates (one per three-second window) accepted this drive, and rejected as outliers
   massUpdates @30 :UInt32;
   rejectedUpdates @31 :UInt32;
   # stops this drive after which the weight may have changed (see the estimator's README)
@@ -555,6 +555,8 @@ struct RamWeightGrade @0xa4f1eb3323f5f582 {
   notCleanReasons @34 :List(Text);
   # learned offset of the stability-control sensor's acceleration reading, meters per second squared
   stabilitySensorOffsetMps2 @35 :Float32;
+  # learned offset of the Comma's own accelerometer reading (forward axis of the truck), meters per second squared
+  commaAccelOffsetMps2 @36 :Float32;
 
   enum StartSource {
     setting @0;          # the device setting CruiseBaseWeightLb (Eric's truck: 8,400 lb)
@@ -574,5 +576,6 @@ struct RamWeightGrade @0xa4f1eb3323f5f582 {
     pitchOnly @1;        # the Comma's own pitch estimate only (wider uncertainty)
     sensorAndPitch @2;   # stability-control sensor acceleration minus wheel-speed acceleration, blended with the Comma's pitch
     sensorOnly @3;       # stability-control sensor only (the Comma's pitch is not calibrated yet)
+    commaAccelerometer @4;  # the Comma's own accelerometer minus wheel-speed acceleration (its pitch counts little)
   }
 }

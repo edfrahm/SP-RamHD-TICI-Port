@@ -28,7 +28,7 @@ from openpilot.sunnypilot.selfdrive.ramweightd.runner import STEP_NANOS, WeightG
 
 DEVICE_ROOT = "/data/media/0/realdata"
 MAC_ROOT = os.path.expanduser("~/src/ram-hd-c3/rlogs")
-WANTED = ("carParams", "carState", "can", "deviceMotion", "extrinsicsCalibration")
+WANTED = ("carParams", "carState", "can", "deviceMotion", "extrinsicsCalibration", "accelerometer")
 MPS_TO_MPH = 2.2369363
 
 
@@ -108,6 +108,8 @@ def replay(files: list[str], make_runner, on_step=None, on_event=None) -> Weight
       runner.handle_device_motion(evt.deviceMotion, evt.valid)
     elif which == "extrinsicsCalibration":
       runner.handle_extrinsics(evt.extrinsicsCalibration)
+    elif which == "accelerometer":
+      runner.handle_accelerometer(evt.accelerometer)
   return runner
 
 
@@ -120,7 +122,6 @@ def add_estimator_arguments(parser: argparse.ArgumentParser) -> None:
   parser.add_argument("--efficiency", type=float, default=est.EFFICIENCY)
   parser.add_argument("--rolling-resistance", type=float, default=est.ROLLING_RESISTANCE)
   parser.add_argument("--body-pitch", type=float, default=est.BODY_PITCH_PER_ACCEL, help="body pitch per acceleration, rad per m/s2")
-  parser.add_argument("--pitch-grade-scale", type=float, default=est.PITCH_GRADE_SCALE, help="multiplies the Comma's pitch grade")
 
 
 def runner_factory(args, record_windows: bool = False):
@@ -131,7 +132,6 @@ def runner_factory(args, record_windows: bool = False):
     e.efficiency = args.efficiency
     e.rolling_resistance = args.rolling_resistance
     e.grade.body_pitch_per_accel = args.body_pitch
-    e.grade.pitch_grade_scale = getattr(args, "pitch_grade_scale", est.PITCH_GRADE_SCALE)
     return r
   return make
 
