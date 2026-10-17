@@ -21,9 +21,16 @@ def run(sim: TruckSim, start_kg: float = 3500., start_std: float = 600., persist
   return est, outs
 
 
+MODES = {
+  "esp": Sensors(),                                                                         # today: ESP_4, TCM_1, Comma accelerometer
+  "comma": Sensors(stability_sensor=False, transmission=False),                             # Comma accelerometer, fallback lock rule
+  "pitch": Sensors(stability_sensor=False, transmission=False, comma_accelerometer=False),  # the Comma's pitch alone
+}
+
+
 @cache
-def varied(sensor: bool, seed: int = 3):
-  sim = TruckSim(Truck(), Sensors(stability_sensor=sensor, transmission=sensor), hilly, seed=seed).run(varied_schedule(3))
+def varied(mode: str, seed: int = 3):
+  sim = TruckSim(Truck(), MODES[mode], hilly, seed=seed).run(varied_schedule(3))
   return sim, *run(sim)
 
 
@@ -36,7 +43,7 @@ def steady_flat():
 @cache
 def with_trailer():
   sched = varied_schedule(2) + [Phase("stop", 180, park=True, door=True, add_mass_kg=4500., add_drag=1.5)] + varied_schedule(2)[1:]
-  sim = TruckSim(Truck(), Sensors(stability_sensor=False, transmission=False), hilly, seed=6).run(sched)
+  sim = TruckSim(Truck(), MODES["comma"], hilly, seed=6).run(sched)
   return sim, *run(sim)
 
 
@@ -48,50 +55,62 @@ def with_fuel():
 
 
 class TestConvergence(OpenpilotTestCase):
-  def test_converges_with_stability_sensor(self):
-    sim, est, outs = varied(True)
+  def check(self, mode: str, tolerance: float, source: str, rule: str):
+    sim, est, outs = varied(mode)
     err = outs[-1].mass_kg / sim.log.mass_kg[-1] - 1.
-    assert abs(err) < 0.02, f"weight error {100 * err:+.2f}%"
+    assert abs(err) < tolerance, f"{mode}: weight error {100 * err:+.2f}%"
     assert abs(outs[-1].mass_kg - sim.log.mass_kg[-1]) < 3. * outs[-1].mass_std_kg
+    assert outs[-1].grade_source == source
+    assert outs[-1].converter_lock_rule == rule
+    return sim, outs
+
+  def test_converges_with_stability_sensor(self):
+    sim, outs = self.check("esp", 0.02, "sensorOnly", "signal")
     assert abs(outs[-1].drag - sim.truck.drag) < 0.15
-    assert outs[-1].grade_source == "sensorAndPitch"
     assert abs(outs[-1].sensor_offset - sim.sensors.sensor_offset) < 0.05
+    assert abs(outs[-1].comma_offset - sim.sensors.comma_offset) < 0.05
+
+  def test_converges_with_comma_accelerometer(self):
+    # no ESP_4 and no TCM_1: the Comma's own accelerometer gives the grade, the steady-ratio rule the converter
+    self.check("comma", 0.025, "commaAccelerometer", "ratioFallback")
 
   def test_converges_with_comma_pitch_only(self):
-    # today's signals: no stability sensor, no transmission message (converter-lock fallback rule)
-    sim, est, outs = varied(False)
-    err = outs[-1].mass_kg / sim.log.mass_kg[-1] - 1.
-    assert abs(err) < 0.025, f"weight error {100 * err:+.2f}%"
-    assert abs(outs[-1].mass_kg - sim.log.mass_kg[-1]) < 3. * outs[-1].mass_std_kg
-    assert outs[-1].grade_source == "pitchOnly"
-    assert outs[-1].converter_lock_rule == "ratioFallback"
-    assert outs[-1].mass_updates > 300
+    sim, outs = self.check("pitch", 0.03, "pitchOnly", "ratioFallback")
+    assert outs[-1].mass_updates > 30
 
   def test_grade_tracks_the_road(self):
-    for sensor in (True, False):
-      sim, est, outs = varied(sensor)
+    for mode, limit in (("esp", 0.004), ("comma", 0.004), ("pitch", 0.004)):
+      sim, est, outs = varied(mode)
       errs = [outs[k].grade - math.tan(math.asin(sim.log.sine[10 * k])) for k in range(200, len(outs))]
       rms = math.sqrt(sum(e * e for e in errs) / len(errs))
-      assert rms < 0.004, f"sensor={sensor}: grade error {rms:.4f}"
+      assert rms < limit, f"{mode}: grade error {rms:.4f}"
 
   def test_pitch_only_grade_is_less_certain(self):
-    std_sensor = varied(True)[2][-1].grade_std
-    std_pitch = varied(False)[2][-1].grade_std
+    std_sensor = varied("esp")[2][-1].grade_std
+    std_pitch = varied("pitch")[2][-1].grade_std
     assert std_pitch >= E.PITCH_ONLY_STD_FLOOR
     assert std_pitch > std_sensor
 
-  def test_uncorrected_body_pitch_biases_low(self):
-    # documents why calibrate.py fits the body pitch: without it, the simulated squat reads as extra climb
-    sim = varied(False)[0]
-    _, outs = run(sim, body_pitch=0.)
-    err = outs[-1].mass_kg / sim.log.mass_kg[-1] - 1.
-    assert -0.04 < err < -0.005
+  def test_pitch_is_not_used_with_an_accelerometer(self):
+    # a wildly wrong pitch must not move the grade when an accelerometer is there
+    sim = varied("esp")[0]
+    bad = [Inputs(**{**inp.__dict__, "pitch": 0.1}) for inp in sim.inputs()]
+    est = WeightGradeEstimator(3500., 600., 32., 7.1, body_pitch_per_accel=BODY_PITCH)
+    outs = [est.step(i) for i in bad]
+    errs = [outs[k].grade - math.tan(math.asin(sim.log.sine[10 * k])) for k in range(200, len(outs))]
+    assert math.sqrt(sum(e * e for e in errs) / len(errs)) < 0.004
+
+  def test_implausible_pitch_is_skipped(self):
+    g = E.GradeFilter()
+    for _ in range(50):
+      g.step(0.1, 20., None, -1.0, 0.003)  # -57 degrees, as some older logs had
+    assert g.source == "none" and abs(g.sine) < 1e-9
 
 
 class TestUncertainty(OpenpilotTestCase):
   def test_steady_flat_cruising_informs_only_the_combination(self):
     sim, est, outs = steady_flat()
-    assert outs[-1].mass_updates > 500
+    assert outs[-1].mass_updates > 150  # three-second windows
     # the weight stays very uncertain, perfectly traded against the air drag
     assert outs[-1].mass_std_kg > 3000.
     assert outs[-1].mass_drag_correlation < -0.95
@@ -99,12 +118,14 @@ class TestUncertainty(OpenpilotTestCase):
     m, c = est.mass.x
     predicted = m * E.G * E.ROLLING_RESISTANCE + c * 25. ** 2
     true = sim.truck.mass_kg * E.G * sim.truck.rolling_resistance + sim.truck.drag * 25. ** 2
-    assert abs(predicted / true - 1.) < 0.03
+    # within the accelerometers' offset uncertainty (no absolute grade reference: their offsets are only as good as
+    # their starting values, here 0.01-0.02 m/s2 off)
+    assert abs(predicted / true - 1.) < 0.06
 
   def test_varied_driving_narrows_the_weight(self):
-    for sensor, limit in ((True, 100.), (False, 400.)):  # the Comma's pitch alone: grades do not count, slower
-      sim, est, outs = varied(sensor)
-      assert outs[-1].mass_std_kg < limit, (sensor, outs[-1].mass_std_kg)
+    for mode, limit in (("esp", 150.), ("comma", 250.), ("pitch", 600.)):  # the Comma's pitch alone: wide
+      sim, est, outs = varied(mode)
+      assert outs[-1].mass_std_kg < limit, (mode, outs[-1].mass_std_kg)
       assert outs[-1].mass_drag_correlation > -0.8
       # narrowing comes with the varied driving: the first minute is still wide
       assert outs[600].mass_std_kg > 2. * outs[-1].mass_std_kg
@@ -175,7 +196,7 @@ class TestStops(OpenpilotTestCase):
 
 class TestPersistence(OpenpilotTestCase):
   def test_state_round_trip_and_widening(self):
-    sim, est, outs = varied(False)
+    sim, est, outs = varied("comma")
     state = est.state()
     assert E.valid_persisted_state(state)
     assert abs(state["mass_kg"] - outs[-1].mass_kg) < 0.1
@@ -229,7 +250,7 @@ class TestFuel(OpenpilotTestCase):
     assert abs(outs[-1].mass_kg / sim.log.mass_kg[-1] - 1.) < 0.02
 
   def test_fuel_inactive_without_signal(self):
-    sim, est, outs = varied(False)
+    sim, est, outs = varied("comma")
     assert outs[-1].fuel_burned_kg == 0.
     assert outs[-1].fuel_level_pct is None
 

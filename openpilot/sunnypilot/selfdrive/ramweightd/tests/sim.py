@@ -19,37 +19,11 @@ from openpilot.sunnypilot.selfdrive.ramweightd.estimator import G, Inputs, LB_TO
 
 DT = 0.01
 GEAR_RATIOS = (3.23, 1.84, 1.41, 1.00, 0.82, 0.63)  # 68RFE
+TCM_1_CODES = {1: 1, 2: 2, 3: 9, 4: 3, 5: 4, 6: 5}  # gear -> TCM_1 ACTUAL_GEAR / DESIRED_GEAR code (measured in #5)
 UPSHIFT_MPS = (4.5, 8.5, 13., 18., 23.)
 DOWNSHIFT_MPS = (3.5, 7.5, 12., 17., 21.5)
 T_MAX_NM = 1300.
 IDLE_RPM = 700.
-
-# Ram Heavy Duty generated database plus the signals pending verification in #5, as realfast proposed them. Used only
-# by the tests, to show the estimator uses those signals once the database has them. The file name must start with
-# "chrysler_" so opendbc applies the Chrysler checksum.
-PENDING_DBC_EXTRA = """
-BO_ 324 TRANS_SPEED: 8 XXX
- SG_ SHIFT_PENDING : 2|1@0+ (1,0) [0|1] "" XXX
- SG_ ACTUAL_GEAR : 11|4@0+ (1,0) [0|15] "" XXX
- SG_ DESIRED_GEAR : 15|4@0+ (1,0) [0|1] "" XXX
- SG_ TC_LOCKED : 17|1@1+ (1,0) [0|0] "" XXX
- SG_ OUTPUT_SPEED : 31|16@0+ (1,0) [0|65534] "rpm" XXX
- SG_ INPUT_SPEED : 47|16@0+ (1,0) [0|65534] "rpm" XXX
-
-BO_ 332 ESP_4: 8 XXX
- SG_ Yaw_Rate : 7|16@0+ (0.01,-327.68) [-327.68|327.66] "deg/s" XXX
- SG_ Acceleration : 32|8@1+ (0.08,-10.24) [-10.24|10.08] "m/s2" XXX
-"""
-
-
-def write_pending_dbc(directory: str) -> str:
-  from opendbc import get_generated_dbcs
-  import os
-  path = os.path.join(directory, "chrysler_ram_hd_pending_test.dbc")
-  with open(path, "w") as f:
-    f.write(get_generated_dbcs()["chrysler_ram_hd_generated"] + "\n" + PENDING_DBC_EXTRA)
-  return path
-
 
 @dataclass
 class Truck:
@@ -70,12 +44,17 @@ class Truck:
 
 @dataclass
 class Sensors:
-  stability_sensor: bool = True    # ESP_4 available
-  transmission: bool = True        # TRANS_SPEED available
+  stability_sensor: bool = True    # ESP_4 frames
+  transmission: bool = True        # TCM_1 frames (converter lock, gears)
+  comma_accelerometer: bool = True  # the Comma's accelerometer events
   fuel_level: bool = False
-  sensor_offset: float = 0.12      # stability sensor mounting offset, m/s2
+  sensor_offset: float = -0.02     # ESP_4 offset, m/s2 (about -0.002 in grade on Eric's drives)
+  comma_offset: float = 0.17       # the Comma's accelerometer offset, m/s2 (0.13-0.19 on Eric's drives)
+  comma_tilt: float = 0.0038       # the Comma's extra tilt per m/s2 of acceleration (cab on its mounts)
   pitch_bias: float = 0.0          # left-over error of the Comma's pitch, radians
   pitch_noise: float = 0.002
+  pitch_slow_error: float = 0.0    # slowly wandering error of the Comma's pitch (standard deviation, radians) ...
+  pitch_slow_tau_s: float = 60.    # ... and how long it lasts
   mount_rpy: tuple = (0.0, 0.03, 0.015)  # the Comma's mounting angles (extrinsicsCalibration)
 
 
@@ -129,6 +108,7 @@ class SimLog:
   rpm: list = field(default_factory=list)
   torque: list = field(default_factory=list)
   gear: list = field(default_factory=list)
+  gear_desired: list = field(default_factory=list)
   locked: list = field(default_factory=list)
   shifting: list = field(default_factory=list)
   pedal: list = field(default_factory=list)
@@ -244,7 +224,9 @@ class TruckSim:
     L.sine.append(s)
     L.rpm.append(omega * 60 / (2 * math.pi))
     L.torque.append(torque)
-    L.gear.append(self.gear)
+    in_shift = self.t - self.last_shift_t < 0.3
+    L.gear.append(self.prev_gear if in_shift else self.gear)
+    L.gear_desired.append(self.gear)
     L.locked.append(locked)
     L.shifting.append(shifting)
     L.pedal.append(0. if (cruise or torque <= 0) else 100. * torque / T_MAX_NM)
@@ -302,11 +284,28 @@ class TruckSim:
     true_sensor = L.a[j] + G * math.sin(math.asin(L.sine[j]) + L.body_pitch[j]) + se.sensor_offset
     sensor = round((true_sensor + rng.gauss(0, 0.05)) / 0.08) * 0.08
     k = max(i - 5, 0)
-    pitch = math.asin(L.sine[k]) + L.body_pitch[k] + se.pitch_bias + rng.gauss(0, se.pitch_noise)
+    pitch = math.asin(L.sine[k]) + L.body_pitch[k] + se.pitch_bias + self._pitch_slow(k) + rng.gauss(0, se.pitch_noise)
+    true_comma = L.a[j] + G * math.sin(math.asin(L.sine[j]) + L.body_pitch[j] + se.comma_tilt * L.a[j]) + se.comma_offset
+    comma = true_comma + rng.gauss(0, 0.03)
     slosh = 30. * L.a[i] / G + 40. * L.sine[i] + rng.gauss(0, 0.4)
     fuel = round((L.fuel_pct[i] + slosh) / 0.5) * 0.5
     return {"v_raw": v_raw, "rpm": max(rpm, 0.), "torque": torque, "wheel_rpm": wheel_rpm, "sensor": sensor, "pitch": pitch,
-            "fuel": min(max(fuel, 0.), 100.)}
+            "comma": comma, "fuel": min(max(fuel, 0.), 100.)}
+
+  def _pitch_slow(self, i: int) -> float:
+    """A slowly wandering pitch error (first-order random process), the same for every reading of the log."""
+    se = self.sensors
+    if se.pitch_slow_error <= 0.:
+      return 0.
+    if getattr(self, "_slow", None) is None or len(self._slow) != len(self.log.t):
+      rng = np.random.default_rng(12345)
+      k = DT / se.pitch_slow_tau_s
+      e = np.zeros(len(self.log.t))
+      w = rng.normal(0., se.pitch_slow_error * math.sqrt(2 * k), len(e))
+      for n in range(1, len(e)):
+        e[n] = e[n - 1] * (1 - k) + w[n]
+      self._slow = e
+    return float(self._slow[i])
 
   def inputs(self, every: int = 10, seed: int = 1) -> list[Inputs]:
     """10 Hz estimator samples."""
@@ -322,8 +321,9 @@ class TruckSim:
         engine_rpm=m["rpm"], engine_torque_nm=m["torque"], rear_wheel_rpm=m["wheel_rpm"],
         traction_control=False,
         stability_accel=m["sensor"] if se.stability_sensor else None,
+        comma_accel=m["comma"] if se.comma_accelerometer else None,
         converter_locked=L.locked[i] if se.transmission else None,
-        shift_pending=L.shifting[i] if se.transmission else None,
+        shift_pending=(L.gear[i] != L.gear_desired[i] or L.shifting[i]) if se.transmission else None,
         fuel_level_pct=m["fuel"] if se.fuel_level else None,
         pitch=m["pitch"], pitch_std=0.003, lateral_accel=0.,
       ))
@@ -342,7 +342,6 @@ class TruckSim:
 
     rng = random.Random(seed)
     packer = CANPacker(dbc_name)
-    pending = "TRANS_SPEED" in packer.dbc.name_to_msg
     L, se = self.log, self.sensors
     t0 = 1_000_000_000
     device_from_calib = rot_from_euler(list(se.mount_rpy))
@@ -396,18 +395,28 @@ class TruckSim:
         (0x7FF, bytes(8), 0),   # an unrelated message the reader must skip
         (0x108, bytes(8), 1),   # ECM_1's address on a bus we do not read
       ]
-      if pending:
-        frames.append(packer.make_can_msg("TRANS_SPEED", 0, {"TC_LOCKED": 1 if L.locked[i] else 0, "ACTUAL_GEAR": L.gear[i],
-                                                             "SHIFT_PENDING": 1 if L.shifting[i] else 0,
-                                                             "INPUT_SPEED": L.rpm[i], "OUTPUT_SPEED": 0}))
-        if se.stability_sensor:
-          frames.append(packer.make_can_msg("ESP_4", 0, {"Acceleration": m["sensor"]}))
+      if se.transmission:
+        frames.append(packer.make_can_msg("TCM_1", 0, {"TC_LOCKED": 1 if L.locked[i] else 0, "ACTUAL_GEAR": TCM_1_CODES[L.gear[i]],
+                                                       "DESIRED_GEAR": TCM_1_CODES[L.gear_desired[i]], "INPUT_SPEED": L.rpm[i],
+                                                       "OUTPUT_SPEED": 0}))
+      if se.stability_sensor:
+        frames.append(packer.make_can_msg("ESP_4", 0, {"Acceleration": m["sensor"]}))
       ce = event("can", t + 0.001, len(frames))
       for k, (addr, dat, bus) in enumerate(frames):
         ce.can[k].address = addr
         ce.can[k].dat = dat
         ce.can[k].src = bus
       events.append(ce)
+
+      if se.comma_accelerometer:
+        # the Comma's accelerometer: specific force in the truck frame -> device frame -> the sensor's own axes
+        th = math.asin(L.sine[i]) + L.body_pitch[i] + se.comma_tilt * L.a[i]
+        f_calib = np.array([m["comma"], 0., -G * math.cos(th)])
+        f_dev = device_from_calib @ f_calib
+        ae = event("accelerometer", t + 0.0015)
+        ae.accelerometer.init("acceleration")
+        ae.accelerometer.acceleration.v = [float(-f_dev[2]), float(-f_dev[1]), float(-f_dev[0])]
+        events.append(ae)
 
       if i % 5 == 0:  # 20 Hz
         dm = event("deviceMotion", t + 0.002)

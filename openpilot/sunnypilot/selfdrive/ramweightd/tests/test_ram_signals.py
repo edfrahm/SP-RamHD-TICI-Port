@@ -1,6 +1,5 @@
 """
-Signal adapter and runner tests, on SYNTHETIC CAN frames packed with the Ram Heavy Duty database (and, for the
-signals pending verification in #5, with a test copy of the database that adds them as realfast proposed).
+Signal adapter and runner tests, on SYNTHETIC CAN frames packed with the Ram Heavy Duty database.
 """
 import os
 import tempfile
@@ -12,17 +11,11 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.ramweightd import ram_signals as RS
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import LB_TO_KG
 from openpilot.sunnypilot.selfdrive.ramweightd.runner import WeightGradeRunner
-from openpilot.sunnypilot.selfdrive.ramweightd.tests.sim import write_pending_dbc
 from openpilot.sunnypilot.selfdrive.ramweightd.tests.test_start_weight import car_params, vin
 
 RAM_HD_DBC = "chrysler_ram_hd_generated"
 DECODED_FIELDS = {"engineRpm", "engineTorqueNm", "gearActual", "gearDesired", "converterLocked", "shiftPending", "transInputRpm",
                   "transOutputRpm", "serviceBrakeOn", "exhaustBrakeOn", "towHaulOn", "trailerConnected", "fuelLevelPct"}
-
-
-def pending_dbc() -> str:
-  d = tempfile.mkdtemp(prefix="ramweightd_dbc_")
-  return write_pending_dbc(d)
 
 
 def can_event(t_nanos: int, frames):
@@ -35,7 +28,7 @@ def can_event(t_nanos: int, frames):
   return msg
 
 
-def truck_frames(packer: CANPacker, pending: bool = False, rpm=1500., torque=400., brake=0):
+def truck_frames(packer: CANPacker, transmission: bool = True, rpm=1500., torque=400., brake=0, gear_code=4):
   frames = [
     packer.make_can_msg("ECM_1", 0, {"ENGINE_RPM": rpm, "ENGINE_TORQUE": torque}),
     packer.make_can_msg("ESP_6", 0, {f"WHEEL_SPEED_{w}": 400. for w in ("FL", "FR", "RL", "RR")}),
@@ -46,9 +39,9 @@ def truck_frames(packer: CANPacker, pending: bool = False, rpm=1500., torque=400
     (0x7FF, bytes(8), 0),
     (0x108, bytes(8), 1),  # ECM_1's address on a bus we do not read: must be ignored
   ]
-  if pending:
-    frames.append(packer.make_can_msg("TRANS_SPEED", 0, {"TC_LOCKED": 1, "ACTUAL_GEAR": 5, "DESIRED_GEAR": 5, "SHIFT_PENDING": 0,
-                                                         "INPUT_SPEED": 1500., "OUTPUT_SPEED": 1500.}))
+  if transmission:
+    frames.append(packer.make_can_msg("TCM_1", 0, {"TC_LOCKED": 1, "ACTUAL_GEAR": gear_code, "DESIRED_GEAR": gear_code,
+                                                   "INPUT_SPEED": 1500., "OUTPUT_SPEED": 1500.}))
     frames.append(packer.make_can_msg("ESP_4", 0, {"Acceleration": 0.4}))
   return frames
 
@@ -69,7 +62,7 @@ class TestMappingTable(OpenpilotTestCase):
     for field, needs in RS.PUBLISHED_FIELDS.items():
       assert field in DECODED_FIELDS and all(n in RS.RAM_SIGNALS for n in needs)
 
-  def test_known_signals_are_in_the_database_and_pending_ones_are_not(self):
+  def test_known_signals_are_in_the_database_and_missing_ones_are_not(self):
     dbc = DBC(RAM_HD_DBC)
     for name, spec in RS.RAM_SIGNALS.items():
       in_db = spec.message in dbc.name_to_msg and spec.signal in dbc.name_to_msg[spec.message].sigs
@@ -79,6 +72,9 @@ class TestMappingTable(OpenpilotTestCase):
         assert not in_db, f"{name} is in the database now: mark it known once verified (#5)"
     reader = RS.RamSignalReader(RAM_HD_DBC)
     assert set(reader.not_in_database) == {n for n, s in RS.RAM_SIGNALS.items() if s.status in (RS.PENDING, RS.MISSING)}
+    # verified in #5
+    for name in ("converter_locked", "gear_code_actual", "gear_code_desired", "trans_input_rpm", "stability_accel_mps2"):
+      assert reader.in_database(name), name
 
   def test_only_the_needed_messages_are_parsed(self):
     reader = RS.RamSignalReader(RAM_HD_DBC)
@@ -86,12 +82,13 @@ class TestMappingTable(OpenpilotTestCase):
     needed = {dbc.name_to_msg[s.message].address for n, s in RS.RAM_SIGNALS.items() if n in reader.specs}
     parsed = set().union(*(set(p.message_states) for p in reader.parsers.values()))
     assert parsed == needed
-    assert len(parsed) <= 8
+    assert len(parsed) <= 10
     assert set(reader.parsers) == {RS.BUS_TRUCK, RS.BUS_CAMERA}
 
-  def test_pending_signals_once_in_the_database(self):
-    reader = RS.RamSignalReader(pending_dbc())
-    assert set(reader.not_in_database) == {n for n, s in RS.RAM_SIGNALS.items() if s.status == RS.MISSING}
+  def test_gear_codes(self):
+    assert [RS.gear_from_code(c) for c in (1, 2, 9, 3, 4, 5)] == [1, 2, 3, 4, 5, 6]
+    assert RS.gear_from_code(0) == 0 and RS.gear_from_code(11) == 0 and RS.gear_from_code(7) == 0
+    assert RS.gear_from_code(None) is None
 
 
 class TestReader(OpenpilotTestCase):
@@ -107,9 +104,11 @@ class TestReader(OpenpilotTestCase):
     assert reader.get("wheel_rpm_rl", now) == 400.
     assert reader.get("brake_pedal", now) == 0.
     assert reader.get("acc_active", now) == 0.
-    assert reader.get("converter_locked", now) is None      # not in the database
+    assert reader.get("converter_locked", now) == 1. and reader.get("gear_code_actual", now) == 4.
+    assert reader.get("fuel_level_pct", now) is None      # not in the database
     assert reader.get("engine_rpm", now + 2_000_000_000) is None  # too old
-    assert reader.published_fields(now) == ["engineRpm", "engineTorqueNm", "serviceBrakeOn"]
+    assert reader.published_fields(now) == ["converterLocked", "engineRpm", "engineTorqueNm", "gearActual", "gearDesired", "serviceBrakeOn",
+                                            "shiftPending", "transInputRpm", "transOutputRpm"]
 
   def test_frames_on_other_buses_are_ignored(self):
     reader = RS.RamSignalReader(RAM_HD_DBC)
@@ -123,12 +122,12 @@ class TestRunner(OpenpilotTestCase):
   def runner(self, dbc=RAM_HD_DBC, **kw):
     return WeightGradeRunner(car_params(vin()), dbc_name=dbc, **kw)
 
-  def feed(self, runner, dbc=RAM_HD_DBC, pending=False, n=30, pitch=False, t0=1_000_000_000):
+  def feed(self, runner, dbc=RAM_HD_DBC, transmission=True, n=30, pitch=False, t0=1_000_000_000):
     packer = CANPacker(dbc)
     out = None
     for i in range(n):
       t = t0 + i * 100_000_000
-      runner.handle_can_events([can_event(t, truck_frames(packer, pending))])
+      runner.handle_can_events([can_event(t, truck_frames(packer, transmission))])
       runner.handle_car_state(car_state_reader())
       if pitch:
         dm = messaging.new_message("deviceMotion")
@@ -147,30 +146,48 @@ class TestRunner(OpenpilotTestCase):
     runner.fill(msg.ramWeightGrade, t)
     return msg
 
-  def test_available_signals_today(self):
+  def test_available_signals_without_transmission_messages(self):
     r = self.runner()
     assert r.available_fields(0) == []  # the filter has not run yet
-    out, t = self.feed(r)
+    out, t = self.feed(r, transmission=False)
     fields = set(self.message(r, t).ramWeightGrade.availableSignals)
     # estimates: weight and drag once the filter runs; no grade measurement yet
     assert {"massKg", "massStdKg", "dragNPerMps2"} <= fields
     assert "grade" not in fields and "gradeStd" not in fields
-    # decoded signals: only those really decoded today; converterLocked from the fallback rule is not listed
+    # decoded signals: only those really decoded; converterLocked from the fallback rule is not listed
     assert fields & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn"}
     assert out.converter_lock_rule == "ratioFallback" and out.converter_locked
 
-  def test_available_signals_with_grade_and_pending_signals(self):
-    dbc = pending_dbc()
-    r = self.runner(dbc)
-    out, t = self.feed(r, dbc, pending=True, pitch=True)
+  def test_available_signals_today(self):
+    r = self.runner()
+    out, t = self.feed(r, pitch=True)
     rwg = self.message(r, t).ramWeightGrade
     fields = set(rwg.availableSignals)
     assert {"massKg", "massStdKg", "dragNPerMps2", "grade", "gradeStd"} <= fields
     assert fields & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn", "converterLocked", "gearActual", "gearDesired",
                                        "shiftPending", "transInputRpm", "transOutputRpm"}
-    assert out.converter_lock_rule == "signal" and rwg.converterLocked and rwg.gearActual == 5
-    assert out.grade_source == "sensorAndPitch"
-    assert str(rwg.gradeSource) == "sensorAndPitch"
+    assert out.converter_lock_rule == "signal" and rwg.converterLocked
+    assert rwg.gearActual == 5 and rwg.gearDesired == 5 and not rwg.shiftPending  # TCM_1 code 4 is fifth gear
+    assert out.grade_source == "sensorOnly" and str(rwg.gradeSource) == "sensorOnly"  # ESP_4; the pitch is not used
+
+  def test_shift_from_gears(self):
+    r = self.runner()
+    packer = CANPacker(RAM_HD_DBC)
+    t0 = 1_000_000_000
+    shifts = []
+    for i in range(40):
+      t = t0 + i * 100_000_000
+      actual, desired = (3, 3) if i < 10 else (3, 4) if i < 13 else (4, 4)
+      frames = [f for f in truck_frames(packer) if f[0] != 0x144]
+      frames.append(packer.make_can_msg("TCM_1", 0, {"TC_LOCKED": 1, "ACTUAL_GEAR": actual, "DESIRED_GEAR": desired, "INPUT_SPEED": 1500.}))
+      r.handle_can_events([can_event(t, frames)])
+      r.handle_car_state(car_state_reader())
+      r.step(t)
+      shifts.append(r.last_inputs.shift_pending)
+    assert not any(shifts[1:10])
+    assert all(shifts[10:13])          # desired gear differs from the actual one
+    assert all(shifts[13:13 + 10])     # the gear just changed: one second
+    assert not any(shifts[24:])
 
   def test_message_contents(self):
     r = self.runner(base_weight_lb=8400., known_extra_lb=250.)
@@ -182,7 +199,7 @@ class TestRunner(OpenpilotTestCase):
     assert abs(rwg.startMassKg - (8400. - 0.5 * r.start.tank_gal * r.start.lb_per_gal) * LB_TO_KG) < 0.1
     assert rwg.engineRpm == 1500. and rwg.engineTorqueNm == 400.
     assert rwg.configuration == r.configuration_text
-    assert str(rwg.converterLockRule) == "ratioFallback"
+    assert str(rwg.converterLockRule) == "signal"
     # the known extra load is published only: the estimator does not know it
     r2 = self.runner(base_weight_lb=8400., known_extra_lb=0.)
     out2, _ = self.feed(r2)
