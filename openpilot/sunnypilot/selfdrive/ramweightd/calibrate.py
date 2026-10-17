@@ -43,17 +43,23 @@ class Fit:
   residual_rms_n: float
 
 
-def fit_constants(windows: list[tuple[Window, float]], known_mass_kg: float, body_pitch_used: float, fit_body_pitch: bool = True) -> Fit:
+def fit_constants(windows: list[tuple[Window, float]], known_mass_kg: float, body_pitch_used: float, fit_body_pitch: bool = True,
+                  fit_grade_scale: bool = False) -> Fit:
   """windows: (window, fuel burned since the start of its drive in kg). body_pitch_used: the value the windows' grade
-  was corrected with."""
+  was corrected with. fit_grade_scale: instead of the body pitch, fit how much of the measured grade the engine force
+  follows (1 = all of it); a check of the grade measurement, not a constant the estimator uses."""
   X, y = [], []
   for w, burned in windows:
     m = known_mass_kg - burned
     row = [w.engine_force, -m * G * w.cosine, -w.v2]
-    if fit_body_pitch:
-      row.append(m * G * w.accel)
+    if fit_grade_scale:
+      row.append(-m * G * w.sine)
+      y.append((m + ROTATING_MASS_KG) * w.accel)
+    else:
+      if fit_body_pitch:
+        row.append(m * G * w.accel)
+      y.append((m + ROTATING_MASS_KG) * w.accel + m * G * w.sine)
     X.append(row)
-    y.append((m + ROTATING_MASS_KG) * w.accel + m * G * w.sine)
   X_all, y_all = np.array(X), np.array(y)
   keep = np.ones(len(y_all), dtype=bool)
   for _ in range(10):
@@ -70,10 +76,10 @@ def fit_constants(windows: list[tuple[Window, float]], known_mass_kg: float, bod
   cov = sigma2 * np.linalg.inv(Xk.T @ Xk)
   std = np.sqrt(np.diag(cov))
   corr = cov / np.outer(std, std)
-  names = NAMES if fit_body_pitch else NAMES[:3]
+  names = NAMES[:3] + (("grade scale",) if fit_grade_scale else NAMES[3:] if fit_body_pitch else ())
   values = dict(zip(names, (float(x) for x in theta), strict=True))
   stds = dict(zip(names, (float(x) for x in std), strict=True))
-  if fit_body_pitch:
+  if fit_body_pitch and not fit_grade_scale:
     values["BODY_PITCH_PER_ACCEL"] += body_pitch_used
   else:
     values["BODY_PITCH_PER_ACCEL"], stds["BODY_PITCH_PER_ACCEL"] = body_pitch_used, 0.
@@ -85,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
   add_estimator_arguments(parser)
   parser.add_argument("--known-mass-lb", type=float, required=True, help="combined weight at the start of each drive")
   parser.add_argument("--no-body-pitch", action="store_true", help="keep BODY_PITCH_PER_ACCEL as given by --body-pitch")
+  parser.add_argument("--fit-grade-scale", action="store_true",
+                      help="check the grade: fit how much of the measured grade the engine force follows (keeps the body pitch fixed)")
   args = parser.parse_args(argv)
 
   windows: list[tuple[Window, float]] = []
@@ -103,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"only {len(windows)} clean windows: need at least {MIN_WINDOWS}. Drive longer, with more varied speeds and grades.")
     return 1
 
-  fit = fit_constants(windows, args.known_mass_lb * LB_TO_KG, args.body_pitch, not args.no_body_pitch)
+  fit = fit_constants(windows, args.known_mass_lb * LB_TO_KG, args.body_pitch, not args.no_body_pitch, args.fit_grade_scale)
   print()
   print(f"fitted on {fit.windows_used} of {fit.windows_total} windows (the rest beyond three standard deviations); " +
         f"residual {fit.residual_rms_n:.0f} N rms")
@@ -116,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"warning: {worst[1]} and {worst[2]} are {worst[0]:.2f} correlated: the drives do not separate them well. Add drives " +
           "with other speeds, grades and accelerations.")
   v = fit.values
+  if "grade scale" in v:
+    print(f"the engine force follows {v['grade scale']:.2f} of the measured grade (1.00 when the grade measurement is right)")
   ok = 0.6 < v["EFFICIENCY"] < 1.0 and 0.004 < v["ROLLING_RESISTANCE"] < 0.02 and abs(v["BODY_PITCH_PER_ACCEL"]) < 0.02
   if not ok:
     print("warning: these values are outside the physically plausible range; check the known weight and the drives")

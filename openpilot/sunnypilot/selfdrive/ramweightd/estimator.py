@@ -80,7 +80,7 @@ MIN_ENGINE_TORQUE_NM = 60.
 MIN_PEDAL_PCT = 2.0
 BRAKE_PRESSURE_ON = 20.  # ESP_8 BRK_PRESSURE in its raw units; its resting value is still to be checked on drives (#5)
 MAX_LATERAL_ACCEL_MPS2 = 1.5  # sharper turns add tire scrub drag the model does not include
-MAX_GRADE_STD = 0.02
+MAX_GRADE_STD = 0.04  # the grade filter has not settled yet (uncertain grades already count little)
 FORWARD_GEARS = ("drive", "low", "sport", "manumatic", "eco")
 # Fallback rule for a locked converter while its own signal is not verified: engine speed divided by wheel speed
 # stays within this fraction of its average for this long.
@@ -139,6 +139,11 @@ PITCH_CORRELATION = 4.          # the Comma's pitch is itself a filtered estimat
 # its grade changes were about 2.5 times larger than the engine force followed (a ratio that does not depend on the
 # unknown weight or efficiency); the cause is not known yet (no GPS fix, stability sensor pending in #5).
 PITCH_ONLY_STD_FLOOR = 0.015
+PITCH_ONLY_REL_ERROR = 0.6  # ... and its error grows with the grade it reads (the force followed only about 0.4 of it)
+# Multiplies the sine of the Comma's pitch before use. 1.0 trusts it. On Eric's drives of 2026-10-16, calibrate.py
+# --fit-grade-scale found 0.33 (with the unconfirmed 8,400 lb, and textbook values for everything else); not applied
+# until the cause is understood (#5 stability sensor, or a drive with a GPS fix).
+PITCH_GRADE_SCALE = 1.0
 MAX_SINE_GRADE = 0.37           # rise over run 0.4
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -227,8 +232,9 @@ class GradeFilter:
   Comma's pitch is used alone and the published uncertainty is never below PITCH_ONLY_STD_FLOOR.
   """
 
-  def __init__(self, body_pitch_per_accel: float = BODY_PITCH_PER_ACCEL):
+  def __init__(self, body_pitch_per_accel: float = BODY_PITCH_PER_ACCEL, pitch_grade_scale: float = PITCH_GRADE_SCALE):
     self.body_pitch_per_accel = body_pitch_per_accel
+    self.pitch_grade_scale = pitch_grade_scale
     self.x = [0., 0.]  # sine of grade, sensor offset (m/s2)
     self.P = [[GRADE_INIT_STD ** 2, 0.], [0., SENSOR_OFFSET_INIT_STD ** 2]]
     self.v_lpf = LowPass(GRADE_LPF_S)
@@ -272,7 +278,7 @@ class GradeFilter:
     if pitch is not None and math.isfinite(pitch):
       sd = max(pitch_std if (pitch_std is not None and math.isfinite(pitch_std)) else 0., 0.002)
       R = (sd ** 2 + PITCH_NOISE_FLOOR ** 2) * PITCH_CORRELATION
-      used_pitch, _ = _kf_update(self.x, self.P, (1., 0.), math.sin(pitch - body_pitch), R)
+      used_pitch, _ = _kf_update(self.x, self.P, (1., 0.), self.pitch_grade_scale * math.sin(pitch - body_pitch), R)
 
     self.x[0] = min(max(self.x[0], -MAX_SINE_GRADE), MAX_SINE_GRADE)
     self.last_sensor_used, self.last_pitch_used = used_sensor, used_pitch
@@ -292,7 +298,7 @@ class GradeFilter:
   def sine_std(self) -> float:
     std = math.sqrt(self.P[0][0])
     if self.source == "pitchOnly":
-      std = max(std, PITCH_ONLY_STD_FLOOR)
+      std = max(std, math.hypot(PITCH_ONLY_STD_FLOOR, PITCH_ONLY_REL_ERROR * self.x[0]))
     return std
 
   @property

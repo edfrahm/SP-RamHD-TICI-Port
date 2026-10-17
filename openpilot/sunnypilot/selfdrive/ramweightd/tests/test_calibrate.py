@@ -37,6 +37,12 @@ class TestCalibrate(OpenpilotTestCase):
     assert abs(v["air drag c"] - 1.05) < 0.15, v
     assert fit.windows_used > 0.9 * fit.windows_total
 
+  def test_grade_scale_check(self):
+    # with the simulated body pitch corrected, the force follows all of the measured grade
+    mass_kg, windows = calibration_windows()
+    fit = calibrate.fit_constants(windows, mass_kg, body_pitch_used=0., fit_grade_scale=True)
+    assert 0.85 < fit.values["grade scale"] < 1.15, fit.values
+
   def test_fixed_body_pitch(self):
     mass_kg, windows = calibration_windows()
     fit = calibrate.fit_constants(windows, mass_kg, body_pitch_used=0.004, fit_body_pitch=False)

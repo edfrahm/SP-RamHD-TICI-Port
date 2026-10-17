@@ -120,6 +120,7 @@ def add_estimator_arguments(parser: argparse.ArgumentParser) -> None:
   parser.add_argument("--efficiency", type=float, default=est.EFFICIENCY)
   parser.add_argument("--rolling-resistance", type=float, default=est.ROLLING_RESISTANCE)
   parser.add_argument("--body-pitch", type=float, default=est.BODY_PITCH_PER_ACCEL, help="body pitch per acceleration, rad per m/s2")
+  parser.add_argument("--pitch-grade-scale", type=float, default=est.PITCH_GRADE_SCALE, help="multiplies the Comma's pitch grade")
 
 
 def runner_factory(args, record_windows: bool = False):
@@ -130,6 +131,7 @@ def runner_factory(args, record_windows: bool = False):
     e.efficiency = args.efficiency
     e.rolling_resistance = args.rolling_resistance
     e.grade.body_pitch_per_accel = args.body_pitch
+    e.grade.pitch_grade_scale = getattr(args, "pitch_grade_scale", est.PITCH_GRADE_SCALE)
     return r
   return make
 

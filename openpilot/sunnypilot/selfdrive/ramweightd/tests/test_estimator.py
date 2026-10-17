@@ -102,7 +102,7 @@ class TestUncertainty(OpenpilotTestCase):
     assert abs(predicted / true - 1.) < 0.03
 
   def test_varied_driving_narrows_the_weight(self):
-    for sensor, limit in ((True, 100.), (False, 250.)):  # the Comma's pitch alone: grades do not count, slower
+    for sensor, limit in ((True, 100.), (False, 400.)):  # the Comma's pitch alone: grades do not count, slower
       sim, est, outs = varied(sensor)
       assert outs[-1].mass_std_kg < limit, (sensor, outs[-1].mass_std_kg)
       assert outs[-1].mass_drag_correlation > -0.8
@@ -192,7 +192,7 @@ class TestPersistence(OpenpilotTestCase):
     for i in range(1, 40):
       est.step(Inputs(t=t + 0.1 * i, v=0., gear="drive" if i < 20 else "park"))
     assert est.mass.mass_std > 4000.  # widened at the park stop
-    assert est.state()["mass_std_kg"] < 1000.
+    assert est.state()["mass_std_kg"] < 0.5 * est.mass.mass_std
 
   def test_invalid_states_are_ignored(self):
     good = {"version": E.STATE_VERSION, "mass_kg": 4000., "mass_std_kg": 100., "drag": 1., "drag_std": 0.1, "mass_drag_cov": 0.}
