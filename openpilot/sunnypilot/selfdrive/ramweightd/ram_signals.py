@@ -73,6 +73,9 @@ RAM_SIGNALS: dict[str, SignalSpec] = {
   "tow_haul_on": SignalSpec(None, "", BUS_TRUCK, MISSING),
   "trailer_connected": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=2.0),
   "fuel_level_pct": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=5.0),
+  # the fuel tank's size in US gallons, if the truck reports it (31, 32, 28, or the optional 50); used for the
+  # starting weight and fuel accounting instead of the published-weight table's assumption
+  "fuel_tank_gal": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=60.0),
 }
 
 # Which ramWeightGrade field each decoded truck signal fills, for availableSignals. A field is listed only when every

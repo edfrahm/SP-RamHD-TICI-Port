@@ -179,7 +179,7 @@ class TestRunner(OpenpilotTestCase):
     rwg = msg.ramWeightGrade
     assert str(rwg.startSource) == "setting"
     assert abs(rwg.knownExtraKg - 250. * LB_TO_KG) < 1e-3
-    assert abs(rwg.startMassKg - (8400. - 0.5 * 32. * 7.1) * LB_TO_KG) < 0.1
+    assert abs(rwg.startMassKg - (8400. - 0.5 * r.start.tank_gal * r.start.lb_per_gal) * LB_TO_KG) < 0.1
     assert rwg.engineRpm == 1500. and rwg.engineTorqueNm == 400.
     assert rwg.configuration == r.configuration_text
     assert str(rwg.converterLockRule) == "ratioFallback"

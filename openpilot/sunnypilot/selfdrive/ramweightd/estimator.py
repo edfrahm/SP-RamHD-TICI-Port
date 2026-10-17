@@ -54,9 +54,11 @@ BODY_PITCH_PER_ACCEL = 0.0
 # four wheel-and-tire sets of about 5 kg m2 each at a 0.42 m rolling radius, plus the shafts.
 ROTATING_MASS_KG = 120.
 # Air drag factor c (newtons per (meter per second) squared) = 0.5 * air density * drag coefficient * frontal area.
-# Heavy-duty pickup: 0.5 * 1.2 kg/m3 * about 0.47 * about 3.6 m2 = about 1.0. A trailer can add 1 to 3.
-DRAG_PRIOR = 1.0
-DRAG_PRIOR_STD = 0.3
+# Ram publishes a drag coefficient of 0.409 (2019 Ram Heavy Duty press kit); the frontal area is not published. An
+# UNOFFICIAL estimate, 83.5 in wide x 80.2 in high x 0.85 = 3.67 m2, gives 0.5 * 1.2 kg/m3 * 0.409 * 3.67 = 0.90.
+# The uncertainty is wide because the area is a guess; a trailer can add 1 to 3.
+DRAG_PRIOR = 0.90
+DRAG_PRIOR_STD = 0.35
 DRAG_TRAILER_STD = 1.0  # uncertainty used whenever a trailer may have been hitched
 # Wind and changes of direction make c drift slowly while driving: this lets its uncertainty grow by about 0.1
 # per 10 minutes. The mass gets no such growth while moving: weight only changes while stopped.
@@ -577,6 +579,9 @@ class FuelTracker:
   @property
   def level_pct(self) -> float | None:
     return self.ref
+
+  def set_tank(self, tank_gal: float, lb_per_gal: float) -> None:
+    self.kg_per_pct = tank_gal * lb_per_gal * LB_TO_KG / 100.
 
   def _set_first(self, level: float) -> float:
     """First level of the drive. Returns the fuel mass change since the level the estimate assumed (refuel or use)."""

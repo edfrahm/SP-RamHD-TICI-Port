@@ -46,6 +46,7 @@ class WeightGradeRunner:
     self.configuration_text = self.configuration.text
     self.base_weight_lb = base_weight_lb
     self.known_extra_lb = known_extra_lb
+    self.tank_gal_reported: float | None = None
     self.start: StartWeight = self._choose_start(None)
 
     # the kept estimate is used only when it belongs to this configuration
@@ -64,7 +65,8 @@ class WeightGradeRunner:
     self.last_inputs: Inputs | None = None
 
   def _choose_start(self, fuel_level_pct: float | None) -> StartWeight:
-    return choose_start_weight(self.configuration, self.table, self.base_weight_lb, fuel_level_pct, self.CP.mass)
+    return choose_start_weight(self.configuration, self.table, self.base_weight_lb, fuel_level_pct, self.CP.mass,
+                               self.tank_gal_reported)
 
   def set_settings(self, base_weight_lb: float, known_extra_lb: float) -> None:
     """Settings may change between drives or during one. The base weight only changes the published starting weight
@@ -145,6 +147,12 @@ class WeightGradeRunner:
 
   def step(self, now_nanos: int) -> Output:
     inp = self.inputs(now_nanos)
+    tank = self.reader.get("fuel_tank_gal", now_nanos)
+    if tank is not None and tank > 0. and tank != self.tank_gal_reported:
+      # the truck reports its tank size: use it instead of the table's assumption
+      self.tank_gal_reported = tank
+      self.start = self._choose_start(self.estimator.fuel.first_level_pct)
+      self.estimator.fuel.set_tank(self.start.tank_gal, self.start.lb_per_gal)
     first_level = self.estimator.fuel.first_level_pct
     out = self.estimator.step(inp)
     if first_level is None and self.estimator.fuel.first_level_pct is not None and self.start.source != "fallback":
