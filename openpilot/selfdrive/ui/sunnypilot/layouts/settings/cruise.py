@@ -12,6 +12,7 @@ from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, option_item_sp, simple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
+from openpilot.sunnypilot.selfdrive.ramweightd.settings import RAM_HD_PLATFORM
 
 
 class PanelType(IntEnum):
@@ -30,6 +31,14 @@ ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot 
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
 
+# Custom Ram ACC Tuning (edfrahm/SP-RamHD-TICI-Port#10), Ram Heavy Duty trucks only. It is shown switched off and
+# cannot be turned on until the Stage 2 smoothing it controls is built (#11, #12), so that the menu never suggests
+# the truck is driving differently when it is not.
+RAM_ACC_TUNING_DESC = tr_noop("Smoother cruise control for Ram Heavy Duty trucks: coast first and brake lightly when " +
+                              "there is time, recover speed gently after traffic clears, and adjust the following distance.")
+RAM_ACC_TUNING_NOT_BUILT = tr_noop("Not built yet. Until it is, the truck's own adaptive cruise control does all " +
+                                   "following and braking.")
+
 
 class CruiseLayout(Widget):
   def __init__(self):
@@ -46,6 +55,13 @@ class CruiseLayout(Widget):
       title=tr("Intelligent Cruise Button Management (ICBM) (Alpha)"),
       description="",
       param="IntelligentCruiseButtonManagement")
+
+    self.ram_acc_tuning_toggle = toggle_item_sp(
+      title=tr("Custom Ram ACC Tuning"),
+      description="<b>" + tr(RAM_ACC_TUNING_NOT_BUILT) + "</b>\n\n" + tr(RAM_ACC_TUNING_DESC),
+      param="RamAccTuning",
+      enabled=False)
+    self.ram_acc_tuning_toggle.set_visible(False)
 
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
@@ -89,6 +105,7 @@ class CruiseLayout(Widget):
 
     items = [
       self.icbm_toggle,
+      self.ram_acc_tuning_toggle,
       self.dec_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
@@ -109,6 +126,7 @@ class CruiseLayout(Widget):
     self._set_current_panel(PanelType.CRUISE)
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
+    self.ram_acc_tuning_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
@@ -118,6 +136,8 @@ class CruiseLayout(Widget):
 
   def _update_state(self):
     super()._update_state()
+
+    self.ram_acc_tuning_toggle.set_visible(ui_state.CP is not None and ui_state.CP.carFingerprint == RAM_HD_PLATFORM)
 
     if ui_state.CP is not None and ui_state.CP_SP is not None:
       has_icbm = ui_state.has_icbm
