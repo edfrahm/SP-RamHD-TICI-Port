@@ -306,4 +306,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // Ram port shared data upload (edfrahm/SP-RamHD-TICI-Port#9)
     {"RamPortDeviceId", {PERSISTENT, STRING}},  // random ID the upload service assigned to this device
+
+    // Custom Ram ACC Tuning: on/off switch for the Ram Heavy Duty cruise smoothing (edfrahm/SP-RamHD-TICI-Port#10)
+    {"RamAccTuning", {PERSISTENT | BACKUP, BOOL, "0"}},
 };
