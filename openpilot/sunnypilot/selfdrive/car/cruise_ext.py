@@ -11,6 +11,7 @@ from opendbc.car.structs import car
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
+from openpilot.common.realtime import DT_CTRL
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import ACTIVE_STATES as SLA_ACTIVE_STATES
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target
@@ -21,6 +22,11 @@ SpeedLimitAssistState = custom.LongitudinalPlanSP.SpeedLimit.AssistState
 CRUISE_BUTTON_TIMER = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0,
                        ButtonType.setCruise: 0, ButtonType.resumeCruise: 0,
                        ButtonType.cancel: 0, ButtonType.mainCruise: 0}
+
+# Intelligent Cruise Button Management on a car whose own cruise control reads the steering-wheel buttons: the driver's
+# cruise buttons, and how long after the last press the car's own set speed has settled (Ram HD: about 0.3 s per step)
+DRIVER_CRUISE_BUTTONS = (ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.setCruise, ButtonType.resumeCruise)
+DRIVER_PRESS_SETTLE_S = 1.0
 
 V_CRUISE_MIN = 8
 V_CRUISE_MAX = 145
@@ -54,6 +60,7 @@ class VCruiseHelperSP:
     self.long_increment = self.params.get("CustomAccLongPressIncrement", return_default=True)
 
     self.enable_button_timers = CRUISE_BUTTON_TIMER
+    self.driver_press_frames = 0
 
     # Speed Limit Assist
     self.sla_state = SpeedLimitAssistState.disabled
@@ -84,6 +91,25 @@ class VCruiseHelperSP:
     v_cruise_delta = v_cruise_delta * actual_increment
 
     return round_to_nearest, v_cruise_delta
+
+  def follow_car_set_speed_after_driver_press(self, CS: car.CarState) -> None:
+    """With ICBM on a car whose own cruise control reads the steering-wheel buttons (pcmCruise), the driver's presses
+    change the car's set speed directly, with the car's own short- and long-press timing. Counting them again here
+    drifts from the car: on 2026-10-19 a Ram 2500 driver held + for 1.2 s, the car went from 65 to 70 mph and this
+    count to 75, and ICBM then pressed + until the car was at 75. So while the driver presses a cruise button, and
+    for a moment after, the car's own set speed is the driver's. Custom ACC Speed Increments keep this count on purpose."""
+    if not self.CP.pcmCruise or self.CP_SP.pcmCruiseSpeed or self.custom_acc_enabled:
+      return
+
+    pressing = any(b.type.raw in DRIVER_CRUISE_BUTTONS for b in CS.buttonEvents) or \
+               any(self.enable_button_timers.get(k, 0) > 0 for k in DRIVER_CRUISE_BUTTONS)
+    if pressing:
+      self.driver_press_frames = int(DRIVER_PRESS_SETTLE_S / DT_CTRL)
+    elif self.driver_press_frames > 0:
+      self.driver_press_frames -= 1
+
+    if (pressing or self.driver_press_frames > 0) and CS.cruiseState.speed > 0:
+      self.v_cruise_kph = max(round(CS.cruiseState.speed * CV.MS_TO_KPH, 1), self.v_cruise_min)
 
   def get_minimum_set_speed(self, is_metric: bool) -> None:
     if self.CP_SP.pcmCruiseSpeed:
