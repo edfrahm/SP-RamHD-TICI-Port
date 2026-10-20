@@ -47,7 +47,7 @@ class Sensors:
   stability_sensor: bool = True    # ESP_4 frames
   transmission: bool = True        # TCM_1 frames (converter lock, gears)
   comma_accelerometer: bool = True  # the Comma's accelerometer events
-  fuel_level: bool = False
+  fuel_level: bool = True          # FUEL_ODO fuel gauge
   sensor_offset: float = 0.0       # ESP_4 offset, m/s2 (about zero on Eric's drives)
   comma_offset: float = 0.17       # the Comma's accelerometer offset, m/s2 (0.13-0.19 on Eric's drives)
   comma_tilt: float = 0.0038       # the Comma's extra tilt per m/s2 of acceleration (cab on its mounts)
@@ -287,10 +287,21 @@ class TruckSim:
     pitch = math.asin(L.sine[k]) + L.body_pitch[k] + se.pitch_bias + self._pitch_slow(k) + rng.gauss(0, se.pitch_noise)
     true_comma = L.a[j] + G * math.sin(math.asin(L.sine[j]) + L.body_pitch[j] + se.comma_tilt * L.a[j]) + se.comma_offset
     comma = true_comma + rng.gauss(0, 0.03)
-    slosh = 30. * L.a[i] / G + 40. * L.sine[i] + rng.gauss(0, 0.4)
-    fuel = round((L.fuel_pct[i] + slosh) / 0.5) * 0.5
+    fuel = self._gauge(i, rng)
     return {"v_raw": v_raw, "rpm": max(rpm, 0.), "torque": torque, "wheel_rpm": wheel_rpm, "sensor": sensor, "pitch": pitch,
             "comma": comma, "fuel": min(max(fuel, 0.), 100.)}
+
+  def _gauge(self, i: int, rng: random.Random) -> float:
+    """The instrument cluster's fuel gauge: the true level damped over about a minute, a little sender noise, in steps
+    of 100/255 percent (so it flickers by a step now and then)."""
+    if getattr(self, "_damped", None) is None or len(self._damped) != len(self.log.t):
+      k = DT / 60.
+      x = np.array(self.log.fuel_pct, dtype=float)
+      for n in range(1, len(x)):
+        x[n] = x[n - 1] + k * (x[n] - x[n - 1]) if abs(x[n] - x[n - 1]) < 1. else x[n]  # refueling shows at once
+      self._damped = x
+    step = 100. / 255.
+    return round((self._damped[i] + rng.gauss(0, 0.05)) / step) * step
 
   def _pitch_slow(self, i: int) -> float:
     """A slowly wandering pitch error (first-order random process), the same for every reading of the log."""
@@ -401,6 +412,8 @@ class TruckSim:
                                                        "OUTPUT_SPEED": 0}))
       if se.stability_sensor:
         frames.append(packer.make_can_msg("ESP_4", 0, {"Acceleration": m["sensor"]}))
+      if se.fuel_level and i % 100 == 0:  # about once per second, like the truck
+        frames.append(packer.make_can_msg("FUEL_ODO", 0, {"FUEL_LEVEL": m["fuel"]}))
       ce = event("can", t + 0.001, len(frames))
       for k, (addr, dat, bus) in enumerate(frames):
         ce.can[k].address = addr

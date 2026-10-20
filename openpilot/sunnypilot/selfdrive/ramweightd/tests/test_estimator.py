@@ -235,15 +235,26 @@ class TestPersistence(OpenpilotTestCase):
 
 class TestFuel(OpenpilotTestCase):
   def test_fuel_burned(self):
+    # counted from the first gauge reading: the gauge's fall while moving x tank x fuel weight
     sim, est, outs = with_fuel()
     k_refuel = next(k for k in range(len(outs)) if any("fuel change" in e for e in outs[k].events))
-    # counting starts after the first FUEL_WARMUP_S of moving (the first unbiased level)
-    t0 = int(E.FUEL_WARMUP_S * 100) + 500
     i_refuel = 10 * k_refuel
     i_last_move = max(i for i in range(i_refuel) if sim.log.v[i] > 1.)
-    true_burned = (sim.log.mass_kg[t0] - sim.log.mass_kg[i_last_move])
-    assert true_burned > 2.
-    assert abs(outs[k_refuel].fuel_burned_kg - true_burned) < 0.3 * true_burned + 1.
+    true_burned = sim.log.mass_kg[0] - sim.log.mass_kg[i_last_move]
+    assert true_burned > 3.
+    # within the gauge's damping (about a minute) and one step (0.4 percent of 32 gallons, about 0.4 kg)
+    assert abs(outs[k_refuel].fuel_burned_kg - true_burned) < 0.15 * true_burned + 0.5, (outs[k_refuel].fuel_burned_kg, true_burned)
+
+  def test_starting_level_from_the_first_reading(self):
+    sim = with_fuel()[0]
+    tk = sim.truck
+    # the starting weight assumed a half tank (as the service does while the level is unknown): corrected at the first
+    # reading by the fuel the gauge shows above half
+    est = WeightGradeEstimator(3500., 600., tk.tank_gal, tk.lb_per_gal, start_fuel_level_pct=50.)
+    out = est.step(sim.inputs()[0])
+    assert out.fuel_level_pct is not None and abs(out.fuel_level_pct - sim.log.fuel_pct[0]) < 0.5
+    expected = (out.fuel_level_pct - 50.) / 100. * tk.tank_gal * tk.lb_per_gal * LB_TO_KG
+    assert abs(out.mass_kg - (3500. + expected)) < 1e-6
 
   def test_refuel_at_a_stop(self):
     sim, est, outs = with_fuel()
@@ -260,17 +271,35 @@ class TestFuel(OpenpilotTestCase):
     assert abs(outs[-1].mass_kg / sim.log.mass_kg[-1] - 1.) < 0.02
 
   def test_fuel_inactive_without_signal(self):
-    sim, est, outs = varied("comma")
+    sim = TruckSim(Truck(), Sensors(fuel_level=False), hilly, seed=3).run(varied_schedule(1))
+    est, outs = run(sim)
     assert outs[-1].fuel_burned_kg == 0.
     assert outs[-1].fuel_level_pct is None
 
-  def test_increase_while_moving_is_not_refueling(self):
-    f = E.FuelTracker(32., 7.1)
-    added = 0.
-    for i in range(int(400 / 0.1)):
-      added += f.step(0.1, 50. + (10. if i > 3500 else 0.), True, 0.)
+  def test_gauge_flicker_and_rises_while_moving(self):
+    f = E.FuelTracker(31., 7.079)
+    step = E.FUEL_STEP_PCT
+    readings = [50., 50. - step, 50., 50. - step, 50. - 2 * step, 50. - step, 60., 50. - 2 * step]  # flicker, a jump while moving
+    added = sum(f.step(0.1, x, True, 0.) for x in readings)
     assert added == 0.
-    assert f.level_pct is not None and f.level_pct < 51.
+    assert abs(f.level_pct - (50. - 2 * step)) < 1e-9
+    assert abs(f.burned_kg - 2 * step * 31. * 7.079 * LB_TO_KG / 100.) < 1e-9  # each step counted once
+    # in the tank: gauge percent x 31 gallons x 7.079 lb per gallon
+    assert abs(f.fuel_kg() - (50. - 2 * step) / 100. * 31. * 7.079 * LB_TO_KG) < 1e-9
+
+  def test_refuel_needs_a_stop_and_a_steady_gauge(self):
+    f = E.FuelTracker(31., 7.079)
+    f.step(0.1, 20., True, 0.)
+    added = 0.
+    stopped = 0.
+    for _ in range(700):  # stopped 25 s, pumping for 20 s (the gauge climbs 3 percent per second), then steady
+      stopped += 0.1
+      level = min(20. + 3. * max(stopped - 25., 0.), 80.)
+      added += f.step(0.1, level, False, stopped)
+      if 25. < stopped < 54.:
+        assert added == 0.  # not while the gauge climbs, nor before it has held for FUEL_STABLE_S
+    assert abs(added - 60. * 31. * 7.079 * LB_TO_KG / 100.) < E.FUEL_STEP_PCT * 31. * 7.079 * LB_TO_KG / 100.
+    assert abs(f.level_pct - 80.) <= E.FUEL_STEP_PCT  # the steady reading, within one gauge step
 
 
 class TestRules(OpenpilotTestCase):
