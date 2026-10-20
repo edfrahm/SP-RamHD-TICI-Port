@@ -18,7 +18,7 @@ import jwt
 from openpilot.sunnypilot.ramport.drive_format import COLUMN_NAMES, LIMITS, MARKER, METADATA_KEYS
 
 HASH_SECRET = b"test-only-secret"
-MAX_BYTES = 5 * 1024 * 1024
+MAX_BYTES = 4_000_000
 
 
 def luhn_ok(digits: str) -> bool:

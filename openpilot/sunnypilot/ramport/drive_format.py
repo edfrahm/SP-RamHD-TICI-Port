@@ -20,7 +20,7 @@ SAMPLE_HZ = 10
 TRIM_S = 120  # the first and the last 2 minutes of every drive are never written
 MAX_ROWS_PER_PART = 36000  # one hour at 10 samples per second
 MAX_PART_SECONDS = 3600.0
-MAX_FILE_BYTES = 5 * 1024 * 1024  # the service refuses larger files
+MAX_FILE_BYTES = 4_000_000  # the service refuses larger files (its host accepts requests up to 4.5 MB; a typical hour is about 0.7 MB)
 
 # Column name, digits after the decimal point (None = whole number or 0/1 flag)
 COLUMNS: list[tuple[str, int | None]] = [

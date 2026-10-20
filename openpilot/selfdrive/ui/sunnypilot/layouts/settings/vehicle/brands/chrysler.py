@@ -30,6 +30,10 @@ def estimate_text(state) -> str:
 class ChryslerSettings(BrandSettings):
   def __init__(self):
     super().__init__()
+    # set before the rows: the Weight Estimate row reads its value as soon as it is created
+    self._estimate = ""
+    self._estimate_time = 0.
+    self._dialog: InputDialogSP | None = None
     self._base_weight_item = button_item_sp(
       tr("Starting Weight"), tr("EDIT"),
       description=tr("Weight of the truck with a full tank, your usual gear and the driver, in pounds. The weight estimator " +
@@ -50,9 +54,6 @@ class ChryslerSettings(BrandSettings):
                                     description=tr("The weight estimator's last kept estimate and its uncertainty."))
     self._ram_hd_items = [self._base_weight_item, self._empty_weight_item, self._known_extra_item, self._estimate_item]
     self.items = list(self._ram_hd_items)
-    self._estimate = ""
-    self._estimate_time = 0.
-    self._dialog: InputDialogSP | None = None
 
   @staticmethod
   def _platform() -> str:
