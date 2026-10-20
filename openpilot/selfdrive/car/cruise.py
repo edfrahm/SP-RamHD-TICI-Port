@@ -54,6 +54,7 @@ class VCruiseHelper(VCruiseHelperSP):
       if not self.CP.pcmCruise or (not self.CP_SP.pcmCruiseSpeed and _enabled):
         # if stock cruise is completely disabled, then we can use our own set speed logic
         self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
+        self.follow_car_set_speed_after_driver_press(CS)
         self.update_speed_limit_assist_v_cruise_non_pcm()
         self.v_cruise_cluster_kph = self.v_cruise_kph
       else:
