@@ -677,6 +677,7 @@ class SelfdriveD(CruiseHelper):
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
 
       self.mads.read_params()
+      self.icbm.read_params(self.params)
       time.sleep(0.1)
 
   def run(self):

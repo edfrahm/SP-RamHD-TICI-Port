@@ -31,13 +31,15 @@ ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot 
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
 
-# Custom Ram ACC Tuning (edfrahm/SP-RamHD-TICI-Port#10), Ram Heavy Duty trucks only. It is shown switched off and
-# cannot be turned on until the Stage 2 smoothing it controls is built (#11, #12), so that the menu never suggests
-# the truck is driving differently when it is not.
-RAM_ACC_TUNING_DESC = tr_noop("Smoother cruise control for Ram Heavy Duty trucks: coast first and brake lightly when " +
-                              "there is time, recover speed gently after traffic clears, and adjust the following distance.")
-RAM_ACC_TUNING_NOT_BUILT = tr_noop("Not built yet. Until it is, the truck's own adaptive cruise control does all " +
-                                   "following and braking.")
+# Custom Ram ACC Tuning (edfrahm/SP-RamHD-TICI-Port#10), Ram Heavy Duty trucks only. It works through Intelligent
+# Cruise Button Management, so it can be switched on only while that is on. Built so far: the planned-speed target (#11).
+RAM_ACC_TUNING_DESC = tr_noop("Smoother cruise control for Ram Heavy Duty trucks. sunnypilot presses the cruise buttons to " +
+                              "keep the set speed near the speed its planner wants, including slower traffic the camera " +
+                              "sees, so the truck coasts first instead of speeding up toward traffic and then braking. " +
+                              "Your set speed stays the maximum, and the truck's own adaptive cruise control still does " +
+                              "all following and braking. Any pedal or cruise button pauses it for 3 seconds.")
+RAM_ACC_TUNING_LATER = tr_noop("Not built yet: paced speed recovery after traffic clears, and following-distance adjustment.")
+RAM_ACC_TUNING_NEEDS_ICBM = tr_noop("Turn on Intelligent Cruise Button Management to use this.")
 
 
 class CruiseLayout(Widget):
@@ -58,9 +60,9 @@ class CruiseLayout(Widget):
 
     self.ram_acc_tuning_toggle = toggle_item_sp(
       title=tr("Custom Ram ACC Tuning"),
-      description="<b>" + tr(RAM_ACC_TUNING_NOT_BUILT) + "</b>\n\n" + tr(RAM_ACC_TUNING_DESC),
+      description=self._ram_acc_tuning_description(),
       param="RamAccTuning",
-      enabled=False)
+      enabled=lambda: self._is_ram_hd() and ui_state.has_icbm)
     self.ram_acc_tuning_toggle.set_visible(False)
 
     self.scc_v_toggle = toggle_item_sp(
@@ -116,6 +118,15 @@ class CruiseLayout(Widget):
     ]
     return items
 
+  @staticmethod
+  def _is_ram_hd() -> bool:
+    return ui_state.CP is not None and ui_state.CP.carFingerprint == RAM_HD_PLATFORM
+
+  @staticmethod
+  def _ram_acc_tuning_description() -> str:
+    desc = tr(RAM_ACC_TUNING_DESC) + "\n\n" + tr(RAM_ACC_TUNING_LATER)
+    return desc if ui_state.has_icbm else "<b>" + tr(RAM_ACC_TUNING_NEEDS_ICBM) + "</b>\n\n" + desc
+
   def _render(self, rect):
     if self._current_panel == PanelType.SLA:
       self._speed_limit_layout.render(rect)
@@ -137,7 +148,11 @@ class CruiseLayout(Widget):
   def _update_state(self):
     super()._update_state()
 
-    self.ram_acc_tuning_toggle.set_visible(ui_state.CP is not None and ui_state.CP.carFingerprint == RAM_HD_PLATFORM)
+    self.ram_acc_tuning_toggle.set_visible(self._is_ram_hd())
+    ram_acc_tuning_desc = self._ram_acc_tuning_description()
+    if self.ram_acc_tuning_toggle.description != ram_acc_tuning_desc:
+      self.ram_acc_tuning_toggle.set_description(ram_acc_tuning_desc)
+      self.ram_acc_tuning_toggle.show_description(True)
 
     if ui_state.CP is not None and ui_state.CP_SP is not None:
       has_icbm = ui_state.has_icbm
