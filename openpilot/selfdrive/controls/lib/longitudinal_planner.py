@@ -156,6 +156,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0
 
+    LongitudinalPlannerSP.update_planned_speed(self, sm, self.v_desired_trajectory, self.a_desired_trajectory, self.allow_throttle)
+
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
 
