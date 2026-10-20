@@ -221,8 +221,8 @@ class WeightGradeRunner:
       # the fuel level became known: the starting weight no longer needs the half-tank assumption
       self.start = self._choose_start(self.estimator.fuel.first_level_pct)
     level = self.estimator.fuel.level_pct
-    if level is not None and (self.floor_level is None or abs(level - self.floor_level) > 1.):
-      self.floor = self._floor(level)  # the fuel not in the tank, as it changes
+    if level is not None and level != self.floor_level:
+      self.floor = self._floor(level)  # the fuel not in the tank, from the gauge, as it changes
       self.floor_level = level
     self.last_inputs, self.last_output = inp, out
     return out

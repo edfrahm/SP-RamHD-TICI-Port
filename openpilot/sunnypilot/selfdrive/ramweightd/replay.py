@@ -142,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   add_estimator_arguments(parser)
   parser.add_argument("--known-mass-lb", type=float, help="the true combined weight, to report the accuracy")
+  parser.add_argument("--known-full-tank-lb", type=float,
+                      help="the true combined weight with a full tank: the reference is this minus the fuel the gauge says is missing")
   parser.add_argument("--known-extra-lb", type=float, default=0., help="as the CruiseKnownExtraLb setting (published only)")
   parser.add_argument("--every", type=float, default=60., help="print a line every this many seconds of drive")
   parser.add_argument("--csv", help="write the estimate at 10 Hz to this file")
@@ -216,6 +218,15 @@ def main(argv: list[str] | None = None) -> int:
   kept = runner.state()
   print(f"kept for the next drive (before any widening at the last stop): {lb(kept['mass_kg']):.0f} lb +/- " +
         f"{lb(kept['mass_std_kg']):.0f} lb, air drag {kept['drag']:.2f} +/- {kept['drag_std']:.2f}")
+  fuel = runner.estimator.fuel
+  if fuel.level_pct is not None:
+    print(f"fuel gauge {fuel.first_level_pct:.1f}% -> {fuel.level_pct:.1f}% of {runner.start.tank_gal:.0f} gal, " +
+          f"burned {lb(fuel.burned_kg):.0f} lb, in the tank now {lb(fuel.fuel_kg()):.0f} lb")
+  if args.known_full_tank_lb:
+    if fuel.level_pct is None:
+      print("no fuel gauge: --known-full-tank-lb needs the fuel level")
+    else:
+      args.known_mass_lb = args.known_full_tank_lb - (1. - fuel.level_pct / 100.) * runner.start.tank_gal * runner.start.lb_per_gal
   published, at_floor = runner.published_mass_kg(kept["mass_kg"])
   print(f"weight floor: {runner.floor.detail}" + (f" = {lb(runner.floor.mass_kg):.0f} lb" if runner.floor.mass_kg else "") +
         f"; published weight {lb(published):.0f} lb" + (" (at the floor; the estimate itself is below it)" if at_floor else ""))
@@ -223,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
     err = lb(kept["mass_kg"]) - args.known_mass_lb
     sigmas = abs(err) / max(lb(kept["mass_std_kg"]), 1e-6)
     print(f"known weight {args.known_mass_lb:.0f} lb: error {err:+.0f} lb ({100. * err / args.known_mass_lb:+.1f}%), " +
-          f"{sigmas:.1f} standard deviations ({'within' if sigmas <= 2. else 'outside'} two)")
+          f"{sigmas:.1f} standard deviations ({'within' if sigmas <= 2. else 'outside'} two); published weight " +
+          f"{lb(published) - args.known_mass_lb:+.0f} lb")
   return 0
 
 
