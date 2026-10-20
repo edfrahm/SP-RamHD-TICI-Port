@@ -157,8 +157,9 @@ The published weight (`massKg`) never goes below the **floor** = empty weight mi
 decision). Empty weight: the setting `CruiseEmptyWeightLb` when above 0 (Eric's truck: 8,040 lb, its sticker weight),
 else Ram's published curb weight for the identified configuration without the options allowance (lower trims may have
 fewer options; the lightest candidate when the bed or the 3500 Cummins output is not identified), else no floor. The
-fuel not in the tank is the whole tank when the level is not known, so the floor holds whether or not the sticker
-weight includes fuel: Eric's floor is 8,040 - 219 = 7,821 lb with an empty 31-gallon tank.
+fuel not in the tank comes from the fuel gauge (the whole tank when there is no gauge reading), so the floor holds
+whether or not the sticker weight includes fuel: Eric's floor is 8,040 lb minus the fuel not in his 31-gallon tank
+(at most 219 lb).
 
 The filter itself is not clamped: `massUnclampedKg` is its estimate, `atFloor` says the floor applied and
 `massFloorKg` is the floor (0 when there is none), so an estimator error stays visible. The estimate kept between
@@ -166,14 +167,24 @@ drives is the unclamped one, with the floor stored next to it for the settings s
 
 ## Fuel
 
-With a fuel-level signal (not found yet, #5): fuel burned = level change × tank size × fuel weight. The level sloshes,
-so while moving it is smoothed over 5 minutes (the first 5 minutes are averaged, so a sloshing first reading does not
-linger), and only decreases count (the level estimate only moves down, and only when the smoothed level is more than
-0.5 percent below it). At a stop the level is calm: after 20 seconds, once it has held steady for 10 seconds, a rise of
-at least 5 percent is refueling, added to the weight at once. `fuelBurnedKg` is the fuel burned this drive.
+The fuel gauge (`FUEL_ODO.FUEL_LEVEL`, 0x310, verified in #5): the instrument cluster's own reading as a percentage of a
+full tank, in steps of 0.39 percent, about once per second. Eric's decision: read it as it is. Fuel in the tank =
+gauge percent / 100 × tank capacity × fuel weight. The tank capacity is the table's for the identified configuration
+(31 gallons on Eric's truck; Crew Cab 8 ft trucks of 2020-2024 are assumed to have the 50-gallon tank, see "Starting
+weight"); fuel weighs 7.079 lb per US gallon for diesel, 6.25 for gasoline (US Department of Energy, Transportation
+Energy Data Book, edition 40, table 6.17).
 
-Fuel weights: diesel 7.079 lb per US gallon, gasoline 6.25 (US Department of Energy, Transportation Energy Data Book,
-edition 40, table 6.17: diesel 7.079; gasoline 6.0-6.5, 6.25 is the middle).
+- **Starting weight and floor**: the fuel not in the tank comes from the gauge (without a gauge, the starting weight
+  assumes half a tank and the floor an empty one).
+- **Fuel burned** (`fuelBurnedKg`): the gauge's fall while moving. The cluster already damps the gauge, so no extra
+  smoothing is needed: the level is the lowest reading so far, which ignores the gauge flickering up by one step now
+  and then.
+- **Refueling**: at a stop (after 20 seconds), a rise of at least 5 percent that has held within one step for 10
+  seconds; the added fuel goes into the weight at once. A rise between drives is found by comparing the first reading
+  with the level kept from the last drive.
+
+On Eric's nine drives the gauge fell steadily (13 percent in the 85-minute drive 0000076b) and flickered up by a step
+0-9 times per drive.
 
 ## Starting weight
 
@@ -254,10 +265,9 @@ tests check only the settings it lists, and nothing requires every backed-up set
 All in `RAM_SIGNALS` in `ram_signals.py` (message, signal, bus, status). Verified or known: `ECM_1` ENGINE_RPM and
 ENGINE_TORQUE, `ESP_6` wheel speeds, `ESP_8` BRK_PRESSURE and Vehicle_Speed, `ESP_1` Brake_Pedal_State, `ECM_5`
 Accelerator_Position, `DAS_3` ACC_ACTIVE and ENGINE_TORQUE_REQUEST (bus 2), `TCM_1` TC_LOCKED, ACTUAL_GEAR,
-DESIRED_GEAR, INPUT_SPEED, OUTPUT_SPEED, `ESP_4` Acceleration; `ESP_2` TCS_ACTIVE is in the shared database but
-unchecked on this truck. Not found yet (hooks, unavailable): exhaust brake, tow/haul, trailer connected, fuel level,
-fuel tank size. Seen but not verified, not used: fuel level 0x310 byte 1 (scale unsettled), range to empty 0x30E,
-fuel rate 0x2A0, odometer 0x310.
+DESIRED_GEAR, INPUT_SPEED, OUTPUT_SPEED, `ESP_4` Acceleration, `FUEL_ODO` FUEL_LEVEL (the fuel gauge); `ESP_2` TCS_ACTIVE is in the shared database but
+unchecked on this truck. Not found yet (hooks, unavailable): exhaust brake, tow/haul, trailer connected, fuel tank size. Seen but not verified, not
+used: range to empty 0x30E, fuel rate 0x2A0, odometer in 0x310.
 
 ECM_1 ENGINE_TORQUE is the real engine torque, not an echo of the cruise request: it equals the factory cruise's
 request while the cruise holds speed (and differs from it 0.2-10 percent of the time), and the force fit is the same
@@ -275,14 +285,15 @@ a grade measurement, and each decoded truck signal (`engineRpm`, `engineTorqueNm
 ## Replay a recorded drive
 
     # on the Mac (drives copied to ~/src/ram-hd-c3/rlogs/<route>--<n>/rlog.zst)
-    python openpilot/sunnypilot/selfdrive/ramweightd/replay.py 00000779--9043655153 --root ~/src/ram-hd-c3/rlogs --known-mass-lb 8400
+    python openpilot/sunnypilot/selfdrive/ramweightd/replay.py 00000779--9043655153 --root ~/src/ram-hd-c3/rlogs --known-full-tank-lb 8400
     # on the comma 3
     cd /data/openpilot && PYTHONPATH=/data/openpilot /usr/local/venv/bin/python \
       openpilot/sunnypilot/selfdrive/ramweightd/replay.py 00000779--9043655153 --known-mass-lb 8400
 
 It runs exactly the on-device code over the drive and prints the estimate every minute, the qualifying stops, why
 moments were not clean, which grade source and converter rule were used, the estimate kept for the next drive and,
-with `--known-mass-lb`, the accuracy. Options: `--base-weight-lb` (as the setting), `--csv FILE` (10 Hz time series),
+with `--known-mass-lb` (or `--known-full-tank-lb`: the weight with a full tank, minus the fuel the gauge says is
+missing), the accuracy. Options: `--base-weight-lb` (as the setting), `--csv FILE` (10 Hz time series),
 `--dbc` (another message database), `--efficiency`, `--rolling-resistance`, `--body-pitch` (try constants). The device settings are not read; the VIN is never printed.
 
 ## Calibrate the constants
@@ -321,11 +332,23 @@ been heavier.
   reading every grade about 0.007 too steep; the windows that taught the weight then implied a median of 7,024 lb. The
   estimate stepped down in the first ten minutes and then stayed. Fix: with ESP_4, the Comma's accelerometer is not
   used for the grade.
-- Kept estimates now (ESP_4 grade, TC_LOCKED, three-second windows, weight from accelerations), unclamped, against the
-  8,180 lb lower bound: 0000073e 9,751 ± 951, 00000742 9,027 ± 858, 00000748 8,636 ± 653, 0000074a 9,114 ± 902,
-  0000076a 8,588 ± 430, 0000076b 8,046 ± 396, 00000776 9,102 ± 822, 00000778 7,796 ± 908 (short drive), 00000779
-  8,898 ± 697 lb: all within two standard deviations (some drives may have been heavier). With `CruiseEmptyWeightLb`
-  8,040 the floor is 7,821 lb and only 00000778 is held at it.
+- Kept estimates now (ESP_4 grade, TC_LOCKED, three-second windows, weight from accelerations, fuel from the gauge),
+  replayed with Eric's settings (starting weight 8,400 lb, empty weight 8,040 lb) against 8,400 lb minus the fuel the
+  gauge says is missing at the end of the drive (`replay.py --known-full-tank-lb 8400`):
+
+  | drive | gauge | reference | estimate (unclamped) | floor | published |
+  |---|---|---|---|---|---|
+  | 0000073e | 11.8 → 7.1 % | 8,196 | 9,747 ± 951 | 7,836 | 9,747 |
+  | 00000742 | 88.2 → 87.1 % | 8,372 | 9,026 ± 858 | 8,012 | 9,026 |
+  | 00000748 | 83.1 → 80.0 % | 8,356 | 8,630 ± 653 | 7,996 | 8,630 |
+  | 0000074a | 79.6 → 76.9 % | 8,349 | 9,106 ± 905 | 7,989 | 9,106 |
+  | 0000076a | 37.3 → 29.0 % | 8,244 | 8,575 ± 430 | 7,884 | 8,575 |
+  | 0000076b | 27.8 → 14.5 % | 8,212 | 8,029 ± 396 | 7,852 | 8,029 |
+  | 00000776 | 68.6 → 66.7 % | 8,327 | 9,099 ± 822 | 7,967 | 9,099 |
+  | 00000778 | 66.7 → 65.9 % | 8,325 | 7,795 ± 909 | 7,965 | 7,965 (floor) |
+  | 00000779 | 65.9 → 63.1 % | 8,319 | 8,893 ± 698 | 7,959 | 8,893 |
+
+  All within two standard deviations (some drives may have been heavier than the reference).
 
 ## Tests
 
