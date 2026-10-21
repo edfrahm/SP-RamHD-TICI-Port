@@ -41,6 +41,15 @@ RAM_ACC_TUNING_DESC = tr_noop("Smoother cruise control for Ram Heavy Duty trucks
 RAM_ACC_TUNING_LATER = tr_noop("Not built yet: paced speed recovery after traffic clears, and following-distance adjustment.")
 RAM_ACC_TUNING_NEEDS_ICBM = tr_noop("Turn on Intelligent Cruise Button Management to use this.")
 
+# Take-over-braking alert (edfrahm/SP-RamHD-TICI-Port#28), Ram Heavy Duty trucks only, on unless turned off. A warning
+# only, so it does not depend on Intelligent Cruise Button Management or Custom Ram ACC Tuning.
+RAM_TAKE_OVER_BRAKING_DESC = tr_noop("Sounds a loud repeating alarm and shows BRAKE NOW when slowing for the car ahead " +
+                                     "needs more braking than the truck's cruise control gives (about 0.3 g). It never " +
+                                     "brakes, steers or disengages anything, and your braking does not silence it: it " +
+                                     "stops once the danger has passed or the truck is slowing enough. It starts only at " +
+                                     "40 mph or more. With neither the cruise control nor sunnypilot steering engaged, " +
+                                     "it watches only cars the camera sees within 60 m (about 200 ft).")
+
 
 class CruiseLayout(Widget):
   def __init__(self):
@@ -64,6 +73,12 @@ class CruiseLayout(Widget):
       param="RamAccTuning",
       enabled=lambda: self._is_ram_hd() and ui_state.has_icbm)
     self.ram_acc_tuning_toggle.set_visible(False)
+
+    self.ram_take_over_braking_toggle = toggle_item_sp(
+      title=tr("Take-Over-Braking Alert"),
+      description=tr(RAM_TAKE_OVER_BRAKING_DESC),
+      param="RamTakeOverBrakingAlert")
+    self.ram_take_over_braking_toggle.set_visible(False)
 
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
@@ -108,6 +123,7 @@ class CruiseLayout(Widget):
     items = [
       self.icbm_toggle,
       self.ram_acc_tuning_toggle,
+      self.ram_take_over_braking_toggle,
       self.dec_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
@@ -138,6 +154,7 @@ class CruiseLayout(Widget):
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
     self.ram_acc_tuning_toggle.show_description(True)
+    self.ram_take_over_braking_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
@@ -149,6 +166,7 @@ class CruiseLayout(Widget):
     super()._update_state()
 
     self.ram_acc_tuning_toggle.set_visible(self._is_ram_hd())
+    self.ram_take_over_braking_toggle.set_visible(self._is_ram_hd())
     ram_acc_tuning_desc = self._ram_acc_tuning_description()
     if self.ram_acc_tuning_toggle.description != ram_acc_tuning_desc:
       self.ram_acc_tuning_toggle.set_description(ram_acc_tuning_desc)
