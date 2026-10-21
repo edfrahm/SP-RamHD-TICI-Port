@@ -56,6 +56,7 @@ class UIStateSP:
     self.rainbow_path: bool = False
     self.road_name_toggle: bool = False
     self.rocket_fuel: bool = False
+    self.show_following_gap: bool = False
     self.speed_limit_mode = None
     self.standstill_timer: bool = False
     self.sunnylink_enabled: bool = False
@@ -169,6 +170,7 @@ class UIStateSP:
     self.rainbow_path = self.params.get_bool("RainbowMode")
     self.road_name_toggle = self.params.get_bool("RoadNameToggle")
     self.rocket_fuel = self.params.get_bool("RocketFuel")
+    self.show_following_gap = self.params.get_bool("ShowFollowingGap")
     self.speed_limit_mode = self.params.get("SpeedLimitMode", return_default=True)
     self.standstill_timer = self.params.get_bool("StandstillTimer")
     self.sunnylink_enabled = self.params.get_bool("SunnylinkEnabled")

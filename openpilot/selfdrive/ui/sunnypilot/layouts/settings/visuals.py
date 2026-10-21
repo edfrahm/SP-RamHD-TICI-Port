@@ -93,6 +93,16 @@ class VisualsLayout(Widget):
            "This displays what the car is currently doing, not what the planner is requesting."),
         None,
       ),
+      "ShowFollowingGap": (
+        lambda: tr("Following Gap in Seconds"),
+        tr("Shows your following distance to the car ahead in seconds at your current speed (the distance divided " +
+           "by your speed), in a box below the MAX speed, to help you choose the cruise control's distance setting. " +
+           "On Ram Heavy Duty trucks, while the factory cruise control is engaged, the distance is the factory " +
+           "windshield unit's own reading of the car it follows (FACTORY under the number); otherwise it is the " +
+           "car ahead the comma camera sees (CAMERA). A dash means no car ahead or a speed below 5 mph. " +
+           "Display only: nothing is sent to the car."),
+        None,
+      ),
     }
     self._toggles = {}
     for param, (title, desc, callback) in self._toggle_defs.items():
