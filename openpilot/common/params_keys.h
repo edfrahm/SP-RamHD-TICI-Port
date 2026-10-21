@@ -191,6 +191,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ScreenSaverEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"ScreenSaverTimeout", {PERSISTENT | BACKUP, INT, "300"}},
     {"ShowAdvancedControls", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"ShowFollowingGap", {PERSISTENT | BACKUP, BOOL, "0"}},  // following gap in seconds below the MAX speed (Visuals)
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
