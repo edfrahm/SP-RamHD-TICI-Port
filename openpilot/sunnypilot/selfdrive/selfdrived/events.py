@@ -260,4 +260,14 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.normal, AlertSize.small,
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.),
   },
+
+  # Ram Heavy Duty: more braking is needed than the factory cruise control can give (take_over_braking.py). Shown
+  # whether or not anything is engaged, and it changes nothing else. No visual alert goes to the truck's dash.
+  EventNameSP.takeOverBraking: {
+    ET.PERMANENT: Alert(
+      "BRAKE NOW",
+      "The cruise cannot slow enough for the car ahead",
+      AlertStatus.critical, AlertSize.full,
+      Priority.HIGHEST, VisualAlert.none, AudibleAlert.warningImmediate, 1.),
+  },
 }
