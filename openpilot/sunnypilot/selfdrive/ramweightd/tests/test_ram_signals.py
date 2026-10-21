@@ -28,7 +28,7 @@ def can_event(t_nanos: int, frames):
   return msg
 
 
-def truck_frames(packer: CANPacker, transmission: bool = True, rpm=1500., torque=400., brake=0, gear_code=4):
+def truck_frames(packer: CANPacker, transmission: bool = True, rpm=1500., torque=400., brake=0, gear_code=4, fuel_pct=None):
   frames = [
     packer.make_can_msg("ECM_1", 0, {"ENGINE_RPM": rpm, "ENGINE_TORQUE": torque}),
     packer.make_can_msg("ESP_6", 0, {f"WHEEL_SPEED_{w}": 400. for w in ("FL", "FR", "RL", "RR")}),
@@ -43,6 +43,8 @@ def truck_frames(packer: CANPacker, transmission: bool = True, rpm=1500., torque
     frames.append(packer.make_can_msg("TCM_1", 0, {"TC_LOCKED": 1, "ACTUAL_GEAR": gear_code, "DESIRED_GEAR": gear_code,
                                                    "INPUT_SPEED": 1500., "OUTPUT_SPEED": 1500.}))
     frames.append(packer.make_can_msg("ESP_4", 0, {"Acceleration": 0.4}))
+  if fuel_pct is not None:
+    frames.append(packer.make_can_msg("FUEL_ODO", 0, {"FUEL_LEVEL": fuel_pct}))
   return frames
 
 
@@ -151,24 +153,26 @@ class TestRunner(OpenpilotTestCase):
     assert r.available_fields(0) == []  # the filter has not run yet
     out, t = self.feed(r, transmission=False)
     fields = set(self.message(r, t).ramWeightGrade.availableSignals)
-    # estimates: weight and drag once the filter runs; no grade measurement yet
-    assert {"massKg", "massStdKg", "dragNPerMps2"} <= fields
-    assert "grade" not in fields and "gradeStd" not in fields
+    # listed: the estimates only, once the filter runs (the message is published on change, so its truck signals are
+    # snapshots and not listed; the grade is not published)
+    assert fields == {"massKg", "massStdKg", "dragNPerMps2"}
     # decoded signals: only those really decoded; converterLocked from the fallback rule is not listed
-    assert fields & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn"}
+    assert set(r.reader.published_fields(t)) & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn"}
     assert out.converter_lock_rule == "ratioFallback" and out.converter_locked
 
   def test_available_signals_today(self):
     r = self.runner()
     out, t = self.feed(r, pitch=True)
     rwg = self.message(r, t).ramWeightGrade
-    fields = set(rwg.availableSignals)
-    assert {"massKg", "massStdKg", "dragNPerMps2", "grade", "gradeStd"} <= fields
-    assert fields & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn", "converterLocked", "gearActual", "gearDesired",
-                                       "shiftPending", "transInputRpm", "transOutputRpm"}
+    assert set(rwg.availableSignals) == {"massKg", "massStdKg", "dragNPerMps2"}
+    assert set(r.reader.published_fields(t)) & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn", "converterLocked",
+                                                                  "gearActual", "gearDesired", "shiftPending", "transInputRpm",
+                                                                  "transOutputRpm"}
     assert out.converter_lock_rule == "signal" and rwg.converterLocked
     assert rwg.gearActual == 5 and rwg.gearDesired == 5 and not rwg.shiftPending  # TCM_1 code 4 is fifth gear
-    assert out.grade_source == "sensorOnly" and str(rwg.gradeSource) == "sensorOnly"  # ESP_4; the pitch is not used
+    assert out.grade_source == "sensorOnly"  # ESP_4; the pitch is not used
+    # the grade is used inside the estimator but not published (Eric, 2026-10-20)
+    assert rwg.grade == 0. and rwg.gradeStd == 0. and str(rwg.gradeSource) == "none" and out.grade_std > 0.
 
   def test_shift_from_gears(self):
     r = self.runner()
@@ -238,6 +242,31 @@ class TestRunner(OpenpilotTestCase):
     # the setting can change during a drive
     r.set_settings(0., 0., 0.)
     assert r.floor.mass_kg is None and r.published_mass_kg(1000.) == (1000., False)
+
+  def test_fuel_gauge(self):
+    # SYNTHETIC: FUEL_ODO frames at 40 percent, then the gauge falls three steps while driving. Fuel in the tank =
+    # gauge percent x the tank capacity x 7.079 lb per gallon (diesel); used for the starting weight's missing fuel, the
+    # floor's fuel not in the tank, and fuel burned.
+    r = self.runner(base_weight_lb=8400., empty_weight_lb=8040.)
+    packer = CANPacker(RAM_HD_DBC)
+    step = 100. / 255.
+    level0 = round(40. / step) * step
+    t = 1_000_000_000
+    for i in range(60):
+      t = 1_000_000_000 + i * 100_000_000
+      level = level0 - step * min(i // 15, 3)
+      r.handle_can_events([can_event(t, truck_frames(packer, fuel_pct=level))])
+      r.handle_car_state(car_state_reader())
+      r.step(t)
+    tank_lb = r.start.tank_gal * r.start.lb_per_gal
+    rwg = self.message(r, t).ramWeightGrade
+    assert abs(rwg.fuelLevelPct - (level0 - 3 * step)) < 1e-3 and "fuelLevelPct" in r.reader.published_fields(t)
+    # starting weight: 8,400 lb (full tank) minus the fuel the first gauge reading says is missing
+    assert r.start.fuel_level_known and abs(rwg.startMassKg - (8400. - (1. - level0 / 100.) * tank_lb) * LB_TO_KG) < 0.1
+    # floor: 8,040 lb minus the fuel not in the tank now
+    assert abs(rwg.massFloorKg - (8040. - (1. - (level0 - 3 * step) / 100.) * tank_lb) * LB_TO_KG) < 0.1
+    # fuel burned: the three steps
+    assert abs(rwg.fuelBurnedKg - 3 * step / 100. * tank_lb * LB_TO_KG) < 1e-3
 
   def test_settings_change_moves_only_the_reference(self):
     r = self.runner()

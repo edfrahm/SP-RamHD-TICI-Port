@@ -92,13 +92,17 @@ class TestDriveWriter(RamPortTestCase):
     # carState
     assert row[COL["accel_mps2"]] == "0.25" and row[COL["cruise_engaged"]] == "1" and row[COL["set_speed_mps"]] == "26.822"
     assert row[COL["brake_pressed"]] in ("0", "1")
-    # ramWeightGrade: only the listed signals (message or column spelling), all others empty
-    assert row[COL["engine_rpm"]] == "1450" and row[COL["mass_kg"]] == "3810" and row[COL["grade_std"]] == "0.004"
-    assert row[COL["tow_haul_on"]] == "1"
-    for column in ("engine_torque_nm", "gear_actual", "gear_desired", "converter_locked", "shift_pending", "trans_input_rpm",
-                   "trans_output_rpm", "service_brake_on", "exhaust_brake_on", "trailer_connected", "fuel_level_pct", "grade",
-                   "mass_std_kg", "drag_n_per_mps2"):
+    # ramWeightGrade: only the listed weight fields (message or column spelling); the grade and the truck signals it
+    # lists are ignored (it publishes only when the estimate changes, and no longer publishes a grade)
+    assert row[COL["mass_kg"]] == "3810"
+    for column in ("grade", "grade_std", "tow_haul_on", "exhaust_brake_on", "trailer_connected", "mass_std_kg", "drag_n_per_mps2"):
       assert row[COL[column]] == "", column
+    # the engine, transmission, brake and fuel gauge columns come from the bus, decoded as the weight estimator does
+    assert row[COL["engine_rpm"]] == "1450" and row[COL["engine_torque_nm"]] == "812.5"
+    assert row[COL["gear_actual"]] == "6" and row[COL["gear_desired"]] == "6" and row[COL["shift_pending"]] == "0"
+    assert row[COL["converter_locked"]] == "1" and row[COL["service_brake_on"]] == "0"
+    assert row[COL["trans_input_rpm"]] == "1450" and row[COL["trans_output_rpm"]] == "1100"
+    assert abs(float(row[COL["fuel_level_pct"]]) - 76.4) < 0.4
     # no modelV2: lead columns empty
     for column in ("lead_prob", "lead_dist_m", "lead_speed_mps", "lead_accel_mps2"):
       assert row[COL[column]] == "", column
@@ -112,6 +116,17 @@ class TestDriveWriter(RamPortTestCase):
     late = [r for r in rows if sample_index(r) >= 2020]
     assert late and all(r[COL["acc_distance_setting"]] == "" for r in late)
     assert all(r[COL["acc_engine_torque_req_nm"]] == "640.25" for r in late)
+
+  def test_truck_columns_only_from_the_bus(self):
+    # no engine, transmission, brake or fuel messages on the bus: those columns stay empty even when ramWeightGrade lists
+    # them, because its values are snapshots from when the estimate last changed
+    d = self.daemon(STATIC_META)
+    synthetic.drive(d, 250.0, available=("engineRpm", "gearActual", "fuelLevelPct", "massKg"), truck=False)
+    _, _, rows = read_part_file(queued_files(self.root)[0])
+    for column in ("engine_rpm", "engine_torque_nm", "gear_actual", "gear_desired", "shift_pending", "converter_locked",
+                   "trans_input_rpm", "trans_output_rpm", "service_brake_on", "fuel_level_pct"):
+      assert all(r[COL[column]] == "" for r in rows), column
+    assert rows[0][COL["mass_kg"]] == "3810"
 
   def test_model_lead_columns(self):
     d = self.daemon(STATIC_META)

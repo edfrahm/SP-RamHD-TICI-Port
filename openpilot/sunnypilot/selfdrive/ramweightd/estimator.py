@@ -167,12 +167,12 @@ MAX_SINE_GRADE = 0.37           # rise over run 0.4
 # ---------------------------------------------------------------------------------------------------------------------
 # Fuel
 # ---------------------------------------------------------------------------------------------------------------------
-FUEL_LPF_MOVING_S = 300.  # fuel sloshes when speeding up, braking, turning and on grades: smooth heavily
-FUEL_WARMUP_S = 300.      # the first level of a drive that starts moving: an average over the first 5 minutes
-FUEL_DEADBAND_PCT = 0.5   # smoothed dips smaller than this are slosh, not fuel burned
-FUEL_LPF_STOPPED_S = 10.  # at a stop the level is calm
-FUEL_SETTLE_S = 20.       # wait this long after stopping before trusting the level
-FUEL_STABLE_S = 10.       # ... and until it has held steady (within 1 percent) this long: refueling has finished
+# The fuel gauge (FUEL_ODO.FUEL_LEVEL, percent of a full tank in steps of 0.39 percent) is already damped by the
+# instrument cluster, so it is read as is (Eric's decision): fuel in the tank = gauge percent x tank capacity x fuel
+# weight per gallon.
+FUEL_STEP_PCT = 100. / 255.  # one gauge step
+FUEL_SETTLE_S = 20.       # at a stop, wait this long before looking for refueling
+FUEL_STABLE_S = 10.       # ... and until the gauge has held (within one step) this long: refueling has finished
 REFUEL_MIN_PCT = 5.       # a rise of at least this much at a stop is refueling
 
 STATE_VERSION = 1
@@ -186,7 +186,7 @@ class LowPass:
   """First-order low-pass filter: smooths a signal with time constant tau seconds.
 
   Until tau seconds of input have been seen it is a plain average of everything so far, so its first value does
-  not linger (a first reading taken while fuel sloshes would otherwise bias it for minutes).
+  not linger.
   """
 
   def __init__(self, tau: float):
@@ -481,7 +481,7 @@ class MassDragFilter:
       self.updated_since_widen = True
     return accepted, sigmas
 
-  def widen(self, trailer_possible: bool) -> None:
+  def widen(self, trailer_possible: bool, mass_now_kg: float | None = None) -> None:
     """Keep the values, widen the uncertainty so any load change since can be learned.
 
     With a possible trailer: the 40,000 lb ceiling sits two standard deviations above the current mass, and the
@@ -491,7 +491,7 @@ class MassDragFilter:
       self.learned_P = [list(self.P[0]), list(self.P[1])]
     self.updated_since_widen = False
     if trailer_possible:
-      mass_std = max((CEILING_KG - self.x[0]) / 2., PAYLOAD_STD_KG)
+      mass_std = max((CEILING_KG - (self.x[0] if mass_now_kg is None else mass_now_kg)) / 2., PAYLOAD_STD_KG)
       self.P[1][1] = max(self.P[1][1], DRAG_TRAILER_STD ** 2)
     else:
       mass_std = PAYLOAD_STD_KG
@@ -610,24 +610,21 @@ def window_measurement(w: Window, fuel_offset_kg: float, mass_guess_kg: float, m
 
 
 class FuelTracker:
-  """Fuel burned, from the fuel level. Inactive (all zero) while the fuel-level signal is not available.
+  """Fuel in the tank and fuel burned, from the fuel gauge. Inactive (all zero) while the gauge is not available.
 
-  The level sloshes, so while moving it is smoothed over FUEL_LPF_MOVING_S and only decreases count: the level
-  estimate only moves down, and only when the smoothed level is more than FUEL_DEADBAND_PCT below it. At a stop the
-  level is calm: after FUEL_SETTLE_S, once it has held steady for FUEL_STABLE_S, a rise of at least REFUEL_MIN_PCT
-  is refueling.
+  The gauge is the instrument cluster's own damped reading, so it is used directly: the first reading of a drive is
+  the starting level, and while moving only decreases count (the level is the lowest reading so far, which ignores the
+  gauge flickering up by a step). At a stop, a rise of at least REFUEL_MIN_PCT that has held for FUEL_STABLE_S is
+  refueling.
   """
 
   def __init__(self, tank_gal: float, lb_per_gal: float, last_drive_level_pct: float | None = None):
     self.kg_per_pct = tank_gal * lb_per_gal * LB_TO_KG / 100.
-    self.moving_lpf = LowPass(FUEL_LPF_MOVING_S)
-    self.calm_lpf = LowPass(FUEL_LPF_STOPPED_S)
-    self.moving_s = 0.
-    self.stable_s = 0.
-    self.ref: float | None = None  # current level estimate, percent
+    self.ref: float | None = None  # current level, percent
     self.burned_kg = 0.            # this drive
     self.last_drive_level_pct = last_drive_level_pct
     self.first_level_pct: float | None = None
+    self.stop_readings: deque[tuple[float, float]] = deque()  # (stopped seconds, gauge) over the last FUEL_STABLE_S
 
   @property
   def level_pct(self) -> float | None:
@@ -635,6 +632,10 @@ class FuelTracker:
 
   def set_tank(self, tank_gal: float, lb_per_gal: float) -> None:
     self.kg_per_pct = tank_gal * lb_per_gal * LB_TO_KG / 100.
+
+  def fuel_kg(self) -> float | None:
+    """Fuel in the tank now, kilograms."""
+    return None if self.ref is None else self.ref * self.kg_per_pct
 
   def _set_first(self, level: float) -> float:
     """First level of the drive. Returns the fuel mass change since the level the estimate assumed (refuel or use)."""
@@ -648,31 +649,26 @@ class FuelTracker:
     """Returns the fuel mass added at this moment (refueling), in kilograms; usually 0."""
     if level is None:
       return 0.
-    added = 0.
+    if self.ref is None:
+      return self._set_first(level)
     if moving:
-      self.calm_lpf.reset()
-      self.stable_s = 0.
-      self.moving_s += dt
-      smoothed = self.moving_lpf.update(level, dt)
-      if self.ref is None:
-        if self.moving_s >= FUEL_WARMUP_S:
-          added = self._set_first(smoothed)
-      else:
-        new_ref = min(self.ref, smoothed + FUEL_DEADBAND_PCT)
-        self.burned_kg += (self.ref - new_ref) * self.kg_per_pct
-        self.ref = new_ref
-    elif stopped_s >= FUEL_SETTLE_S:
-      calm = self.calm_lpf.update(level, dt)
-      self.stable_s = self.stable_s + dt if abs(level - calm) < 1. else 0.
-      if self.stable_s >= FUEL_STABLE_S:
-        if self.ref is None:
-          added = self._set_first(calm)
-          self.moving_lpf.set(calm)
-        elif calm > self.ref + REFUEL_MIN_PCT:
-          added = (calm - self.ref) * self.kg_per_pct
-          self.ref = calm
-          self.moving_lpf.set(calm)
-    return added
+      self.stop_readings.clear()
+      if level < self.ref:
+        self.burned_kg += (self.ref - level) * self.kg_per_pct
+        self.ref = level
+      return 0.
+    if stopped_s < FUEL_SETTLE_S:
+      return 0.
+    self.stop_readings.append((stopped_s, level))
+    while self.stop_readings and stopped_s - self.stop_readings[0][0] > FUEL_STABLE_S:
+      self.stop_readings.popleft()
+    readings = [x for _, x in self.stop_readings]
+    held = stopped_s - self.stop_readings[0][0] >= FUEL_STABLE_S - 0.15 and max(readings) - min(readings) <= FUEL_STEP_PCT + 1e-6
+    if held and min(readings) > self.ref + REFUEL_MIN_PCT:
+      added = (min(readings) - self.ref) * self.kg_per_pct
+      self.ref = min(readings)
+      return added
+    return 0.
 
 
 @dataclass
@@ -749,9 +745,17 @@ class WeightGradeEstimator:
   def _qualifying_stop(self, trailer_possible: bool, why: str, events: list[str]) -> None:
     self.stop_qualified = True
     self.qualifying_stops += 1
-    self.mass.widen(trailer_possible)
+    self.mass.widen(trailer_possible, self.mass_kg)
     self.window.reset()
     events.append(f"qualifying stop ({why}): weight kept at {lb(self.mass_kg):.0f} lb, uncertainty widened")
+
+  def note_qualifying_stop(self, why: str, stopped_s: float, trailer_possible: bool = True) -> list[str]:
+    """A qualifying stop seen while the service was not stepping the estimator (asleep, see duty.py). The next steps
+    continue this stop, so it is not counted twice."""
+    events: list[str] = []
+    self.stopped_s = stopped_s
+    self._qualifying_stop(trailer_possible, why, events)
+    return events
 
   def step(self, inp: Inputs) -> Output:
     events: list[str] = []

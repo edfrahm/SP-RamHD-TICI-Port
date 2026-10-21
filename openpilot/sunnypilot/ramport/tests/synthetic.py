@@ -84,10 +84,12 @@ def ram_weight_grade(available: list[str]):
 
 
 class CanStream:
-  """Packs DAS_3 and DAS_4 (bus 2) and ECM_5 (bus 0) with valid counters and checksums, plus unrelated traffic."""
+  """Packs DAS_3 and DAS_4 (bus 2) and ECM_5 (bus 0) with valid counters and checksums, plus unrelated traffic, and
+  with `truck` the engine, transmission, brake and fuel gauge messages (bus 0)."""
 
-  def __init__(self):
+  def __init__(self, truck: bool = True):
     self.packer = CANPacker(RAM_HD_DBC)
+    self.truck = truck
 
   def frames(self, include_das4: bool = True) -> list[tuple[int, bytes, int]]:
     frames = [
@@ -99,6 +101,16 @@ class CanStream:
     ]
     if include_das4:
       frames.append(self.packer.make_can_msg("DAS_4", BUS_CAMERA, {"ACC_DISTANCE_CONFIG_2": 2, "ACC_SET_SPEED_KPH": 97}))
+    if self.truck:
+      frames += [
+        self.packer.make_can_msg("ECM_1", BUS_TRUCK, {"ENGINE_RPM": 1450., "ENGINE_TORQUE": 812.5}),
+        # TCM_1 gear code 5 is sixth gear (ramweightd ram_signals.TCM_1_GEARS)
+        self.packer.make_can_msg("TCM_1", BUS_TRUCK, {"TC_LOCKED": 1, "ACTUAL_GEAR": 5, "DESIRED_GEAR": 5, "INPUT_SPEED": 1450.,
+                                                      "OUTPUT_SPEED": 1100.}),
+        self.packer.make_can_msg("ESP_1", BUS_TRUCK, {"Brake_Pedal_State": 0}),
+        self.packer.make_can_msg("ESP_8", BUS_TRUCK, {"BRK_PRESSURE": 0.}),
+        self.packer.make_can_msg("FUEL_ODO", BUS_TRUCK, {"FUEL_LEVEL": 76.4}),
+      ]
     return frames
 
   def message_bytes(self, nanos: int, include_das4: bool = True) -> bytes:
@@ -113,9 +125,9 @@ class CanStream:
 
 
 def drive(daemon, seconds: float, available=("engineRpm", "massKg", "grade"), start_index: int = 0, with_model: bool = True,
-          das4_until_s: float | None = None, started_after: bool = False):
+          das4_until_s: float | None = None, started_after: bool = False, truck: bool = True):
   """Feed a synthetic drive of `seconds` to a RamPortDaemon at 10 samples per second, then end it."""
-  can = CanStream()
+  can = CanStream(truck)
   rwg = ram_weight_grade(list(available)) if available is not None else None
   n = int(round(seconds / SAMPLE_DT))
   for k in range(n):

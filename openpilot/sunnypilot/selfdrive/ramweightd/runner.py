@@ -28,7 +28,6 @@ SHIFT_SETTLE_S = 1.0  # after the actual gear changes, the shift counts as in pr
 STEP_HZ = 10.
 STEP_NANOS = int(1e9 / STEP_HZ)
 ESTIMATE_FIELDS = ["massKg", "massStdKg", "dragNPerMps2"]
-GRADE_FIELDS = ["grade", "gradeStd"]
 
 
 def is_ram_hd(CP) -> bool:
@@ -101,6 +100,12 @@ class WeightGradeRunner:
     if floor is not None and mass_kg < floor:
       return floor, True
     return mass_kg, False
+
+  def wake(self, car_state=None) -> None:
+    """Listening again after a sleep (duty.py): drop the inputs from before it, keep the newest carState."""
+    self.car_state = car_state
+    self.device_motion, self.device_motion_valid = None, False
+    self.accel_sum, self.accel_count = [0., 0., 0.], 0
 
   # ---- message input ----
   def handle_can_events(self, events) -> None:
@@ -221,8 +226,8 @@ class WeightGradeRunner:
       # the fuel level became known: the starting weight no longer needs the half-tank assumption
       self.start = self._choose_start(self.estimator.fuel.first_level_pct)
     level = self.estimator.fuel.level_pct
-    if level is not None and (self.floor_level is None or abs(level - self.floor_level) > 1.):
-      self.floor = self._floor(level)  # the fuel not in the tank, as it changes
+    if level is not None and level != self.floor_level:
+      self.floor = self._floor(level)  # the fuel not in the tank, from the gauge, as it changes
       self.floor_level = level
     self.last_inputs, self.last_output = inp, out
     return out
@@ -237,16 +242,19 @@ class WeightGradeRunner:
       x = r.get(name, now_nanos)
       return default if x is None else x
 
-    mass, at_floor = self.published_mass_kg(out.mass_kg)
+    # the estimate from the filter itself, not the last step: asleep (duty.py), a qualifying stop widens it between steps
+    e = self.estimator
+    mass, at_floor = self.published_mass_kg(e.mass_kg)
     rwg.massKg = float(mass)
-    rwg.massUnclampedKg = float(out.mass_kg)
+    rwg.massUnclampedKg = float(e.mass_kg)
     rwg.atFloor = at_floor
     rwg.massFloorKg = float(self.floor.mass_kg or 0.)
-    rwg.massStdKg = float(out.mass_std_kg)
-    rwg.dragNPerMps2 = float(out.drag)
-    rwg.dragStdNPerMps2 = float(out.drag_std)
-    rwg.grade = float(out.grade)
-    rwg.gradeStd = float(out.grade_std)
+    rwg.massStdKg = float(e.mass.mass_std)
+    rwg.dragNPerMps2 = float(e.mass.drag)
+    rwg.dragStdNPerMps2 = float(e.mass.drag_std)
+    # the grade is used inside the estimator but not published until a feature needs it (Eric, 2026-10-20)
+    rwg.grade = 0.
+    rwg.gradeStd = 0.
     rwg.cleanMoment = out.clean
     rwg.cleanSamples = out.clean_samples
     rwg.fuelBurnedKg = float(out.fuel_burned_kg)
@@ -272,27 +280,22 @@ class WeightGradeRunner:
     rwg.availableSignals = self.available_fields(now_nanos)
 
     rwg.converterLockRule = out.converter_lock_rule
-    rwg.gradeSource = out.grade_source
+    rwg.gradeSource = "none"
     rwg.massUpdates = out.mass_updates
     rwg.rejectedUpdates = out.rejected_updates
-    rwg.qualifyingStops = out.qualifying_stops
-    corr = out.mass_drag_correlation
+    rwg.qualifyingStops = e.qualifying_stops
+    corr = e.mass.correlation
     rwg.massDragCorrelation = float(corr) if math.isfinite(corr) else 0.
     rwg.notCleanReasons = out.not_clean_reasons
     rwg.stabilitySensorOffsetMps2 = float(out.sensor_offset)
     rwg.commaAccelOffsetMps2 = float(out.comma_offset)
 
   def available_fields(self, now_nanos: int) -> list[str]:
-    """availableSignals: the ramWeightGrade fields the shared upload (#9) may write. The estimates are listed once the
-    filter has run (the grade once it has a measurement); a decoded truck signal only when it comes from a real
-    signal on the bus (converterLocked from the fallback rule is not listed)."""
-    fields = self.reader.published_fields(now_nanos)
-    out = self.last_output
-    if out is not None:
-      fields += ESTIMATE_FIELDS
-      if out.grade_source != "none":
-        fields += GRADE_FIELDS
-    return sorted(fields)
+    """availableSignals: the ramWeightGrade fields the shared upload (#9) may write: the estimates, once the filter has
+    run. The service publishes only when the estimate changes (duty.py), so the truck signals in the message are
+    snapshots from that moment and are not listed; the upload reads them from the bus itself. The grade is not
+    published."""
+    return sorted(ESTIMATE_FIELDS) if self.last_output is not None else []
 
   def state(self) -> dict:
     """RamWeightGradeState: the estimate kept between drives, tagged with the configuration in words (no VIN)."""

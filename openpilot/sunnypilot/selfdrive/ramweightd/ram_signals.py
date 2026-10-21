@@ -69,13 +69,15 @@ RAM_SIGNALS: dict[str, SignalSpec] = {
   # stability-control sensor (ESP_4, 0x14C), verified in #5: fore-and-aft acceleration in steps of 0.08 m/s2
   "stability_accel_mps2": SignalSpec("ESP_4", "Acceleration", BUS_TRUCK, KNOWN),
 
+  # the fuel gauge (FUEL_ODO, 0x310), verified in #5: percent of a full tank (raw 0-255), about once per second; the
+  # cluster already damps it (it falls steadily while driving and only rises at refueling)
+  "fuel_level_pct": SignalSpec("FUEL_ODO", "FUEL_LEVEL", BUS_TRUCK, KNOWN, max_age_s=5.0),
+
   # not found or not verified yet (#5); hooks only. Candidates seen but not verified, not used:
-  # fuel level 0x310 byte 1 (8|8@1, scale unsettled), range to empty 0x30E 1|10@0 (likely km),
-  # fuel rate 0x2A0 36|13@0 (likely 0.01 L/h per count), odometer 0x310 39|24@0 (0.1 km).
+  # range to empty 0x30E 1|10@0 (likely km), fuel rate 0x2A0 36|13@0 (likely 0.01 L/h per count), odometer 0x310 39|24@0.
   "exhaust_brake_on": SignalSpec(None, "", BUS_TRUCK, MISSING),
   "tow_haul_on": SignalSpec(None, "", BUS_TRUCK, MISSING),
   "trailer_connected": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=2.0),
-  "fuel_level_pct": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=5.0),
   # the fuel tank's size in US gallons, if the truck reports it (31, 32, 28, or the optional 50); used for the
   # starting weight and fuel accounting instead of the published-weight table's assumption
   "fuel_tank_gal": SignalSpec(None, "", BUS_TRUCK, MISSING, max_age_s=60.0),
