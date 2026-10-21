@@ -749,6 +749,14 @@ class WeightGradeEstimator:
     self.window.reset()
     events.append(f"qualifying stop ({why}): weight kept at {lb(self.mass_kg):.0f} lb, uncertainty widened")
 
+  def note_qualifying_stop(self, why: str, stopped_s: float, trailer_possible: bool = True) -> list[str]:
+    """A qualifying stop seen while the service was not stepping the estimator (asleep, see duty.py). The next steps
+    continue this stop, so it is not counted twice."""
+    events: list[str] = []
+    self.stopped_s = stopped_s
+    self._qualifying_stop(trailer_possible, why, events)
+    return events
+
   def step(self, inp: Inputs) -> Output:
     events: list[str] = []
     dt = 0.1 if self.t_prev is None else inp.t - self.t_prev

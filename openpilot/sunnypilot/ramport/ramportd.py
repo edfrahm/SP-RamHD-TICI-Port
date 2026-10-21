@@ -36,7 +36,8 @@ from openpilot.sunnypilot.ramport.uploader import QueueUploader, Reaction, api_h
 SAMPLE_HZ = 10
 TOGGLE_CHECK_S = 1.0
 # A message older than this is treated as not available
-MAX_AGE_NS = {"carState": int(0.5e9), "modelV2": int(0.5e9), "ramWeightGrade": int(1.0e9)}
+# ramWeightGrade comes when the estimate changes and at least every ramweightd duty.HEARTBEAT_S (10 s)
+MAX_AGE_NS = {"carState": int(0.5e9), "modelV2": int(0.5e9), "ramWeightGrade": int(30e9)}
 PART_NUMBER_RE = re.compile(r"[^A-Za-z0-9]")
 
 

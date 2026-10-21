@@ -23,6 +23,7 @@ import sys
 from collections import Counter
 
 from openpilot.sunnypilot.selfdrive.ramweightd import estimator as est
+from openpilot.sunnypilot.selfdrive.ramweightd.duty import SLEEP_CHECK_S, DutyCycle, asleep_check, listening_step
 from openpilot.sunnypilot.selfdrive.ramweightd.estimator import lb
 from openpilot.sunnypilot.selfdrive.ramweightd.runner import STEP_NANOS, WeightGradeRunner
 
@@ -74,10 +75,15 @@ def iterate_events(files: list[str]):
     yield from LogReader(f, sources=[])
 
 
-def replay(files: list[str], make_runner, on_step=None, on_event=None) -> WeightGradeRunner | None:
-  """Feed the logs to a runner built from the first carParams; step it ten times per second of log time."""
+def replay(files: list[str], make_runner, on_step=None, on_event=None, duty: bool = False) -> WeightGradeRunner | None:
+  """Feed the logs to a runner built from the first carParams; step it ten times per second of log time.
+
+  With duty, follow the service's duty cycle (duty.py): while asleep nothing is stepped and only carState is looked at,
+  once per second, as on the truck. runner.duty then holds the duty cycle and runner.listening_s the time listened."""
   runner = None
   next_step = None
+  cycle = None
+  last_check = None
   for evt in iterate_events(files):
     which = evt.which()
     if which not in WANTED:
@@ -87,19 +93,39 @@ def replay(files: list[str], make_runner, on_step=None, on_event=None) -> Weight
       if which == "carParams":
         runner = make_runner(evt.carParams)
         next_step = t
+        if duty:
+          cycle = runner.duty = DutyCycle(t * 1e-9)
+          runner.listening_s = 0.
       continue
     if which == "carParams":
+      continue
+    if cycle is not None and not cycle.listening:
+      if which == "carState" and (last_check is None or t - last_check >= SLEEP_CHECK_S * 1e9):
+        last_check = t
+        for e in asleep_check(runner, cycle, t * 1e-9, evt.carState):
+          if on_event is not None:
+            on_event(runner, t, e)
+        next_step = t  # listening again starts its steps from here
       continue
     if t - next_step > 1_000_000_000:  # a gap (missing segment): restart the clock
       next_step = t
     while t >= next_step:
-      out = runner.step(next_step)
+      if cycle is not None:
+        events = listening_step(runner, cycle, next_step, STEP_NANOS * 1e-9)
+        runner.listening_s += STEP_NANOS * 1e-9
+      else:
+        events = list(runner.step(next_step).events)
       if on_step is not None:
-        on_step(runner, next_step, out)
-      for e in out.events:
+        on_step(runner, next_step, runner.last_output)
+      for e in events:
         if on_event is not None:
           on_event(runner, next_step, e)
       next_step += STEP_NANOS
+      if cycle is not None and not cycle.listening:
+        last_check = None
+        break
+    if cycle is not None and not cycle.listening:
+      continue
     if which == "can":
       runner.handle_can_events([evt])
     elif which == "carState":
@@ -147,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
   parser.add_argument("--known-extra-lb", type=float, default=0., help="as the CruiseKnownExtraLb setting (published only)")
   parser.add_argument("--every", type=float, default=60., help="print a line every this many seconds of drive")
   parser.add_argument("--csv", help="write the estimate at 10 Hz to this file")
+  parser.add_argument("--duty", action="store_true", help="follow the service's duty cycle (duty.py): learn until settled, then sleep")
   args = parser.parse_args(argv)
 
   files = find_log_files(args.logs, args.root)
@@ -194,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
   def on_event(runner, t, e):
     print(f"{(t - stats['t0']) * 1e-9:7.0f}s  {e}")
 
-  runner = replay(files, runner_factory(args), on_step, on_event)
+  runner = replay(files, runner_factory(args), on_step, on_event, duty=args.duty)
   if csv_file:
     csv_file.close()
   if runner is None or runner.last_output is None:
@@ -204,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
   out = runner.last_output
   moving = max(stats["moving"], 1)
   print()
+  if args.duty:
+    print(f"duty cycle: listened {runner.listening_s / 60.:.1f} min (the lines above are the listening steps only); ended "
+          f"{runner.duty.mode}, {'settled' if runner.duty.settled else 'not settled'}")
   print(f"drive: {stats['steps'] / 10. / 60.:.1f} min, moving {stats['moving'] / 10. / 60.:.1f} min, " +
         f"clean {100. * stats['clean'] / moving:.1f}% of moving time, {out.mass_updates} weight updates " +
         f"({out.rejected_updates} rejected as outliers), {out.qualifying_stops} qualifying stops")

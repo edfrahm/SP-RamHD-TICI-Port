@@ -153,24 +153,26 @@ class TestRunner(OpenpilotTestCase):
     assert r.available_fields(0) == []  # the filter has not run yet
     out, t = self.feed(r, transmission=False)
     fields = set(self.message(r, t).ramWeightGrade.availableSignals)
-    # estimates: weight and drag once the filter runs; no grade measurement yet
-    assert {"massKg", "massStdKg", "dragNPerMps2"} <= fields
-    assert "grade" not in fields and "gradeStd" not in fields
+    # listed: the estimates only, once the filter runs (the message is published on change, so its truck signals are
+    # snapshots and not listed; the grade is not published)
+    assert fields == {"massKg", "massStdKg", "dragNPerMps2"}
     # decoded signals: only those really decoded; converterLocked from the fallback rule is not listed
-    assert fields & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn"}
+    assert set(r.reader.published_fields(t)) & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn"}
     assert out.converter_lock_rule == "ratioFallback" and out.converter_locked
 
   def test_available_signals_today(self):
     r = self.runner()
     out, t = self.feed(r, pitch=True)
     rwg = self.message(r, t).ramWeightGrade
-    fields = set(rwg.availableSignals)
-    assert {"massKg", "massStdKg", "dragNPerMps2", "grade", "gradeStd"} <= fields
-    assert fields & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn", "converterLocked", "gearActual", "gearDesired",
-                                       "shiftPending", "transInputRpm", "transOutputRpm"}
+    assert set(rwg.availableSignals) == {"massKg", "massStdKg", "dragNPerMps2"}
+    assert set(r.reader.published_fields(t)) & DECODED_FIELDS == {"engineRpm", "engineTorqueNm", "serviceBrakeOn", "converterLocked",
+                                                                  "gearActual", "gearDesired", "shiftPending", "transInputRpm",
+                                                                  "transOutputRpm"}
     assert out.converter_lock_rule == "signal" and rwg.converterLocked
     assert rwg.gearActual == 5 and rwg.gearDesired == 5 and not rwg.shiftPending  # TCM_1 code 4 is fifth gear
-    assert out.grade_source == "sensorOnly" and str(rwg.gradeSource) == "sensorOnly"  # ESP_4; the pitch is not used
+    assert out.grade_source == "sensorOnly"  # ESP_4; the pitch is not used
+    # the grade is used inside the estimator but not published (Eric, 2026-10-20)
+    assert rwg.grade == 0. and rwg.gradeStd == 0. and str(rwg.gradeSource) == "none" and out.grade_std > 0.
 
   def test_shift_from_gears(self):
     r = self.runner()
@@ -258,7 +260,7 @@ class TestRunner(OpenpilotTestCase):
       r.step(t)
     tank_lb = r.start.tank_gal * r.start.lb_per_gal
     rwg = self.message(r, t).ramWeightGrade
-    assert abs(rwg.fuelLevelPct - (level0 - 3 * step)) < 1e-3 and "fuelLevelPct" in rwg.availableSignals
+    assert abs(rwg.fuelLevelPct - (level0 - 3 * step)) < 1e-3 and "fuelLevelPct" in r.reader.published_fields(t)
     # starting weight: 8,400 lb (full tank) minus the fuel the first gauge reading says is missing
     assert r.start.fuel_level_known and abs(rwg.startMassKg - (8400. - (1. - level0 / 100.) * tank_lb) * LB_TO_KG) < 0.1
     # floor: 8,040 lb minus the fuel not in the tank now
