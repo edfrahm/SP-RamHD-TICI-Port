@@ -7,8 +7,9 @@ Tests for the following gap in seconds (Settings > Visuals > Following Gap in Se
 - the number is smoothed against jitter, but a new car (lost and found, a cut-in) or a new source shows at once;
 - the setting exists, is backed up, defaults to off, and the screen and the settings panel use the same setting.
 
-The settings panel needs a graphics window, which a test machine does not have, so the toggle tests read its code with
-Python's own parser, as test_ram_acc_tuning.py does.
+The screen code needs a graphics window, which a test machine does not have: the number is tested through
+follow_gap_calc.py, which has no screen code, and the toggle tests read the screen code with Python's own parser, as
+test_ram_acc_tuning.py does.
 """
 import ast
 import os
@@ -17,14 +18,14 @@ import unittest
 
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.constants import CV
-from openpilot.selfdrive.ui.onroad.hud_renderer import CRUISE_DISABLED_CHAR
-from openpilot.selfdrive.ui.sunnypilot.onroad.follow_gap import PARAM, FollowGap, GapSource, follow_gap, gap_text
+from openpilot.selfdrive.ui.sunnypilot.onroad.follow_gap_calc import DASH, PARAM, FollowGap, GapSource, follow_gap, gap_text
 from openpilot.selfdrive.ui.sunnypilot.tests.test_ram_acc_tuning import PARAMS_KEYS, joined
 
 UI_DIR = os.path.join(BASEDIR, "openpilot", "selfdrive", "ui", "sunnypilot")
 VISUALS = os.path.join(UI_DIR, "layouts", "settings", "visuals.py")
 UI_STATE = os.path.join(UI_DIR, "ui_state.py")
 HUD = os.path.join(UI_DIR, "onroad", "hud_renderer.py")
+BASE_HUD = os.path.join(BASEDIR, "openpilot", "selfdrive", "ui", "onroad", "hud_renderer.py")
 
 MPH_60 = 60 * CV.MPH_TO_MS  # 26.8 m/s
 NO_CAMERA = (0., 0.)
@@ -59,7 +60,9 @@ class TestFollowGap(unittest.TestCase):
     gap, source = follow_gap(MPH_60, False, 254., 0.1, 80.)
     self.assertIsNone(gap)
     self.assertEqual(source, GapSource.none)
-    self.assertEqual(gap_text(gap), CRUISE_DISABLED_CHAR)
+    self.assertEqual(gap_text(gap), DASH)
+    with open(BASE_HUD) as f:
+      self.assertIn(f"CRUISE_DISABLED_CHAR = '{DASH}'", f.read())  # the same dash as the MAX speed box
     self.assertEqual(follow_gap(MPH_60, False, 0., *NO_CAMERA), (None, GapSource.none))
 
   def test_low_speed_is_a_dash(self):
@@ -94,6 +97,13 @@ class TestFollowGapSmoothing(unittest.TestCase):
     fg.update(20., False, 254., 0.9, 40.)
     gap, _ = fg.update(20., False, 254., 0.9, 46.)  # a one-frame 6 m (0.3 s) jitter moves the shown gap under 0.05 s
     self.assertLess(gap - 2., 0.05)
+
+  def test_far_car_jitter_smoothed(self):
+    fg = FollowGap(self.DT)
+    for _ in range(40):
+      fg.update(20., False, 254., 0.9, 120.)  # 6 s
+    gap, _ = fg.update(20., False, 254., 0.9, 140.)  # 1 s off at 6 s is jitter, not another car
+    self.assertLess(gap - 6., 0.1)
 
   def test_cut_in_shown_at_once(self):
     fg = FollowGap(self.DT)
