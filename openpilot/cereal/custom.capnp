@@ -204,6 +204,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  takeOverBraking @8 :TakeOverBraking;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -307,6 +308,27 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     greenLightAlert @0 :Bool;
     leadDepartAlert @1 :Bool;
   }
+
+  # Take-over-braking alert (Ram Heavy Duty): what it saw in this frame
+  struct TakeOverBraking {
+    enabled @0 :Bool;          # the setting is on and the car is a Ram Heavy Duty
+    active @1 :Bool;           # alerting now
+    overLimit @2 :Bool;        # the braking needed is above the cruise's limit and the truck is not slowing that much
+    source @3 :Source;         # which car ahead it used
+    gap @4 :Float32;           # m, distance to that car
+    leadSpeed @5 :Float32;     # m/s, that car's speed (the camera's corrected by the learned figure)
+    closingSpeed @6 :Float32;  # m/s, truck speed minus that car's speed
+    minimumMargin @7 :Float32; # m
+    brakingNeeded @8 :Float32; # m/s², infinite when already inside the minimum margin while closing
+    measuredSlowing @9 :Float32; # m/s², the truck's own slowing
+    leadSpeedFromTrend @10 :Bool; # the factory unit's reading was at its cap: speed from its distance trend
+
+    enum Source {
+      none @0;
+      factoryUnit @1;
+      camera @2;
+    }
+  }
 }
 
 struct OnroadEventSP @0xda96579883444c35 {
@@ -355,6 +377,7 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     laneChangeRoadEdge @24;
     bigModelReady @25;
+    takeOverBraking @26;
   }
 }
 
@@ -448,6 +471,14 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+  factoryLead @1 :FactoryLead;
+
+  # The car the factory cruise control follows, as the car's own radar or camera unit reports it. Read only.
+  struct FactoryLead {
+    present @0 :Bool;  # a car is reported (only while the factory cruise control is engaged)
+    dRel @1 :Float32;  # m, distance to it
+    vLead @2 :Float32; # m/s, its speed as reported (on the Ram HD capped at the set speed)
+  }
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {

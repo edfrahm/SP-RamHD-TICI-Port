@@ -310,4 +310,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Custom Ram ACC Tuning: on/off switch for the Ram Heavy Duty cruise smoothing (edfrahm/SP-RamHD-TICI-Port#10)
     {"RamAccTuning", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RamLeadSpeedCalibration", {PERSISTENT, JSON}},  // how slow the camera reads the car ahead, learned on the truck
+
+    // Take-over-braking alert: warns when more braking is needed than the cruise can give (edfrahm/SP-RamHD-TICI-Port#28)
+    {"RamTakeOverBrakingAlert", {PERSISTENT | BACKUP, BOOL, "1"}},
 };

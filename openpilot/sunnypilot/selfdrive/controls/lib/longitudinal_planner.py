@@ -16,6 +16,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAle
 from openpilot.sunnypilot.selfdrive.controls.lib.lead_speed_calibration import PARAM as LEAD_CAL_PARAM, LeadSpeedCalibration
 from openpilot.sunnypilot.selfdrive.controls.lib.planned_speed import PlannedSpeed, RAM_ACC_TUNING_PARAM, ram_acc_tuning_available
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
+from openpilot.sunnypilot.selfdrive.controls.lib.take_over_braking import PARAM as TAKE_OVER_BRAKING_PARAM, Source, \
+  TakeOverBraking, take_over_braking_available
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
@@ -23,10 +25,12 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+EventNameSP = custom.OnroadEventSP.EventName
 LaneChangeState = log.LaneChangeState
 
 PLANNED_SPEED_PARAMS_PERIOD = 1.  # s, Custom Ram ACC Tuning takes effect within this, on or off
 LEAD_CAL_SAVE_PERIOD = 60.  # s, the learned camera correction is saved at most this often
+TAKE_OVER_BRAKING_PARAMS_PERIOD = 1.  # s, the take-over-braking alert's setting takes effect within this
 
 
 class LongitudinalPlannerSP:
@@ -56,6 +60,16 @@ class LongitudinalPlannerSP:
     self.planned_speed_frame = 0
     self.icbm_v_target = 0.
     self.icbm_source = LongitudinalPlanSource.cruise
+
+    # Take-over-braking alert (Ram Heavy Duty, on unless the driver turns it off). A warning only: it changes no plan
+    # and no target. Without the cruise-button feature it reads the learned camera correction as last saved.
+    self.take_over_braking = None
+    if take_over_braking_available(CP):
+      calibration = self.lead_cal or LeadSpeedCalibration(model_bundle.ref if model_bundle else "default",
+                                                           self.params.get(LEAD_CAL_PARAM))
+      self.take_over_braking = TakeOverBraking(calibration)
+    self.take_over_braking_enabled = False
+    self.take_over_braking_frame = 0
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -136,10 +150,32 @@ class LongitudinalPlannerSP:
     else:
       self.icbm_v_target, self.icbm_source = ceilings[source], source
 
+  def update_take_over_braking(self, sm: messaging.SubMaster) -> None:
+    """The take-over-braking alert (take_over_braking.py): adds its event while the braking needed is more than the
+    factory cruise control can give"""
+    if self.take_over_braking is None:
+      return
+    if self.take_over_braking_frame % int(TAKE_OVER_BRAKING_PARAMS_PERIOD / DT_MDL) == 0:
+      self.take_over_braking_enabled = self.params.get_bool(TAKE_OVER_BRAKING_PARAM)
+    self.take_over_braking_frame += 1
+    if not self.take_over_braking_enabled:
+      self.take_over_braking.reset()
+      return
+
+    CS = sm['carState']
+    lead = sm['radarState'].leadOne
+    unit = sm['carStateSP'].factoryLead
+    lane_change = CS.leftBlinker != CS.rightBlinker or sm['modelV2'].meta.laneChangeState != LaneChangeState.off
+    if self.take_over_braking.update(CS.vEgo, CS.cruiseState.enabled, sm['selfdriveStateSP'].mads.enabled,
+                                     CS.cruiseState.speed, lane_change, lead.present, lead.dRel, lead.vLead,
+                                     lead.modelProb, unit.present, unit.dRel, unit.vLead):
+      self.events_sp.add(EventNameSP.takeOverBraking)
+
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
+    self.update_take_over_braking(sm)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')
@@ -200,5 +236,20 @@ class LongitudinalPlannerSP:
     e2eAlerts = longitudinalPlanSP.e2eAlerts
     e2eAlerts.greenLightAlert = self.e2e_alerts_helper.green_light_alert
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
+
+    # Take-over-braking alert
+    if (tob := self.take_over_braking) is not None:
+      takeOverBraking = longitudinalPlanSP.takeOverBraking
+      takeOverBraking.enabled = self.take_over_braking_enabled
+      takeOverBraking.active = tob.active
+      takeOverBraking.overLimit = tob.over
+      takeOverBraking.source = int(tob.source)
+      takeOverBraking.gap = float(tob.gap)
+      takeOverBraking.leadSpeed = float(tob.lead_v)
+      takeOverBraking.closingSpeed = float(tob.closing)
+      takeOverBraking.minimumMargin = float(tob.margin)
+      takeOverBraking.brakingNeeded = float(tob.need)
+      takeOverBraking.measuredSlowing = float(tob.slowing)
+      takeOverBraking.leadSpeedFromTrend = tob.source == Source.factoryUnit and tob.unit.speed_from_trend
 
     pm.send('longitudinalPlanSP', plan_sp_send)
