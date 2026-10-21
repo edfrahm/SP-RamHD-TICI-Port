@@ -4,13 +4,16 @@ Turns the newest messages into one data row of the drive file (contract section 
 Sources:
 - carState: speed, acceleration, driver on the brake pedal, factory cruise control engaged and its set speed.
 - modelV2: the Comma camera's estimate of the car ahead (the first entry of leadsV3).
-- ramWeightGrade: the weight and grade estimator's message. A field is written only when the estimator lists it
-  in availableSignals; otherwise the field is left empty.
+- ramWeightGrade: the weight estimator's message, for the weight and air drag. A field is written only when the
+  estimator lists it in availableSignals; otherwise the field is left empty. The estimator publishes only when its
+  estimate changes, so its truck signals are not used here, and it no longer publishes a grade (grade columns empty).
 - Controller area network (CAN) bus messages, decoded with opendbc's CANParser and the Ram Heavy Duty message
   database chrysler_ram_hd_generated:
   - DAS_3 and DAS_4 on bus 2 (the side of the factory windshield unit, which runs the factory adaptive cruise
     control): its engine torque request, brake request, braking amount and following-distance setting.
   - ECM_5 on bus 0 (the truck side): accelerator pedal position.
+  - The engine, transmission, brake and fuel gauge signals, decoded exactly as the weight estimator decodes them
+    (ramweightd/ram_signals.py): ECM_1, TCM_1, ESP_1, ESP_8 and FUEL_ODO on bus 0.
 
 Nothing about location, video, audio, the vehicle identification number (VIN), the route name or the dongle ID
 is read here.
@@ -19,6 +22,8 @@ from openpilot.cereal import log
 from opendbc.can.parser import CANParser
 
 from openpilot.sunnypilot.ramport.drive_format import COLUMN_NAMES, format_value
+from openpilot.sunnypilot.selfdrive.ramweightd.estimator import BRAKE_PRESSURE_ON
+from openpilot.sunnypilot.selfdrive.ramweightd.ram_signals import RAM_SIGNALS, RamSignalReader, gear_from_code
 
 RAM_HD_DBC = "chrysler_ram_hd_generated"
 BUS_TRUCK = 0     # truck side
@@ -29,25 +34,22 @@ CAN_STALE_NS = int(1.0e9)
 
 # ramWeightGrade field name (as in openpilot/cereal/custom.capnp) for each column it fills
 RAM_WEIGHT_GRADE_FIELDS = {
-  "engine_rpm": "engineRpm",
-  "engine_torque_nm": "engineTorqueNm",
-  "gear_actual": "gearActual",
-  "gear_desired": "gearDesired",
-  "converter_locked": "converterLocked",
-  "shift_pending": "shiftPending",
-  "trans_input_rpm": "transInputRpm",
-  "trans_output_rpm": "transOutputRpm",
-  "service_brake_on": "serviceBrakeOn",
-  "exhaust_brake_on": "exhaustBrakeOn",
-  "tow_haul_on": "towHaulOn",
-  "trailer_connected": "trailerConnected",
-  "fuel_level_pct": "fuelLevelPct",
-  "grade": "grade",
-  "grade_std": "gradeStd",
   "mass_kg": "massKg",
   "mass_std_kg": "massStdKg",
   "drag_n_per_mps2": "dragNPerMps2",
 }
+
+# the weight estimator's signals (ram_signals.RAM_SIGNALS) this file reads from the bus itself, and the column each fills
+TRUCK_SIGNAL_COLUMNS = {
+  "engine_rpm": "engine_rpm",
+  "engine_torque_nm": "engine_torque_nm",
+  "trans_input_rpm": "trans_input_rpm",
+  "trans_output_rpm": "trans_output_rpm",
+  "converter_locked": "converter_locked",
+  "fuel_level_pct": "fuel_level_pct",
+}
+TRUCK_SIGNALS = {name: RAM_SIGNALS[name] for name in
+                 list(TRUCK_SIGNAL_COLUMNS) + ["gear_code_actual", "gear_code_desired", "brake_pedal", "brake_pressure"]}
 
 # (column, message, signal) read from the controller area network bus
 CAN_COLUMNS = [
@@ -70,6 +72,8 @@ class CanSource:
     }
     self.wanted = {(bus, addr) for bus, parser in self.parsers.items() for addr in parser.addresses}
     self.message_bus = {"ECM_5": BUS_TRUCK, "DAS_3": BUS_CAMERA, "DAS_4": BUS_CAMERA}
+    self.truck = RamSignalReader(RAM_HD_DBC, TRUCK_SIGNALS)
+    self.wanted |= {(bus, addr) for addr, buses in self.truck.wanted.items() for bus in buses}
     self.last_nanos = 0
 
   def update_frames(self, nanos: int, frames) -> None:
@@ -77,6 +81,7 @@ class CanSource:
     wanted = [(addr, dat, src) for addr, dat, src in frames if (src, addr) in self.wanted]
     for parser in self.parsers.values():
       parser.update([(nanos, wanted)])
+    self.truck.update([(nanos, wanted)])
     self.last_nanos = max(self.last_nanos, nanos)
 
   def update_strings(self, can_strings) -> None:
@@ -93,6 +98,27 @@ class CanSource:
     if seen == 0 or now_nanos - seen > CAN_STALE_NS:
       return None
     return parser.vl[message][signal]
+
+  def truck_values(self, now_nanos: int | None = None) -> dict[str, object]:
+    """The engine, transmission, brake and fuel columns; a column whose signal is not current is left out."""
+    now_nanos = self.last_nanos if now_nanos is None else now_nanos
+    get = self.truck.get
+    values: dict[str, object] = {}
+    for name, column in TRUCK_SIGNAL_COLUMNS.items():
+      x = get(name, now_nanos)
+      if x is not None:
+        values[column] = bool(x > 0.5) if column == "converter_locked" else x
+    actual, desired = gear_from_code(get("gear_code_actual", now_nanos)), gear_from_code(get("gear_code_desired", now_nanos))
+    if actual is not None:
+      values["gear_actual"] = actual
+    if desired is not None:
+      values["gear_desired"] = desired
+    if actual is not None and desired is not None:
+      values["shift_pending"] = actual != desired
+    pedal, pressure = get("brake_pedal", now_nanos), get("brake_pressure", now_nanos)
+    if pedal is not None or pressure is not None:
+      values["service_brake_on"] = bool(pedal is not None and pedal > 0.5) or (pressure is not None and pressure > BRAKE_PRESSURE_ON)
+    return values
 
 
 def available_set(rwg) -> set[str]:
@@ -135,5 +161,6 @@ def sample_fields(car_state=None, model=None, rwg=None, can: CanSource | None = 
   if can is not None:
     for column, message, signal in CAN_COLUMNS:
       values[column] = can.value(message, signal, now_nanos)
+    values.update(can.truck_values(now_nanos))
 
   return [format_value(column, values.get(column)) for column in COLUMN_NAMES[1:]]
