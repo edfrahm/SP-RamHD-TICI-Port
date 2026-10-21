@@ -448,6 +448,14 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
+  factoryLead @1 :FactoryLead;
+
+  # The car the factory cruise control follows, as the car's own radar or camera unit reports it. Read only.
+  struct FactoryLead {
+    present @0 :Bool;  # a car is reported (only while the factory cruise control is engaged)
+    dRel @1 :Float32;  # m, distance to it
+    vLead @2 :Float32; # m/s, its speed as reported (on the Ram HD capped at the set speed)
+  }
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {
